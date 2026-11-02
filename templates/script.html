@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="crumb"><a href="{{ url_for('home') }}">Tests</a> / <a href="{{ url_for('test_page', test_id=t.id) }}">{{ t.name }}</a> / {{ s.student }}</p>
+<div class="head-row">
+  <h1>{{ s.student }} {% if s.roll %}<span class="muted">· {{ s.roll }}</span>{% endif %}</h1>
+  <div class="actions">
+    {% if nav.prev %}<a class="btn" href="{{ url_for('script_page', script_id=nav.prev) }}">← Prev</a>{% endif %}
+    <span class="muted">{{ nav.pos }} of {{ nav.count }}</span>
+    {% if nav.next %}<a class="btn" href="{{ url_for('script_page', script_id=nav.next) }}">Next →</a>{% endif %}
+  </div>
+</div>
+
+<div class="review">
+  <section class="pages card">
+    <h3>Answer sheet <span class="legend"><i class="g"></i> read <i class="o"></i> unsure</span></h3>
+    {% for p in s.previews %}
+      <a href="{{ url_for('files', name=p) }}" target="_blank"><img src="{{ url_for('files', name=p) }}" alt="page {{ loop.index }}"></a>
+    {% else %}<p class="muted">No preview.</p>{% endfor %}
+  </section>
+
+  <section>
+    <form method="post" class="card">
+      <h3>Text read from the sheet</h3>
+      <div class="row">
+        <input name="student" value="{{ s.student }}" placeholder="Student name">
+        <input name="roll" value="{{ s.roll }}" placeholder="Roll no.">
+      </div>
+      <textarea name="text" rows="16" class="mono">{{ s.text }}</textarea>
+      <p class="hint">Words marked <code>[?]</code> were hard to read — check them against the page. Fix any wrong words; marking uses this text.
+        {% if s.words %}Read {{ s.words }} words, {{ s.low_conf }} unsure.{% endif %}
+        Read by <b>{{ reader_name(s.reader) }}</b>.{% if s.reader != 'own' %} Boxes on the left show the own model's cutting; the text came from AI where marked.{% endif %}</p>
+      <div class="row">
+        <select name="engine">
+          <option value="groq" {{ 'selected' if settings.engine=='groq' }} {{ 'disabled' if not settings.groq_key }}>Mark with Groq</option>
+          <option value="gemini" {{ 'selected' if settings.engine=='gemini' }} {{ 'disabled' if not settings.api_key }}>Mark with Gemini</option>
+          <option value="offline" {{ 'selected' if settings.engine=='offline' }}>Mark offline (keywords)</option>
+        </select>
+        <button class="btn primary" name="action" value="mark" onclick="this.textContent='Marking…'">{{ 'Mark again' if s.result else 'Mark' }}</button>
+        <button class="btn" name="action" value="save_text">Save text</button>
+        <button class="btn" name="action" value="read_ai" formnovalidate {{ 'disabled title="Add a Groq or Gemini key in Settings"' if not ai_reader }} onclick="this.textContent='Reading…'">Read with AI</button>
+        <button class="btn" name="action" value="read_own" formnovalidate onclick="this.textContent='Reading…'">Read with own model</button>
+      </div>
+    </form>
+
+    {% if s.result %}
+    <form method="post" class="card result">
+      <div class="score">
+        <span class="big">{{ '%g'|format(s.result.total) }}</span><span class="of">/ {{ '%g'|format(s.result.max) }}</span>
+        <span class="muted">{{ s.result.total|pct(s.result.max) }} · marked by {{ s.result.engine }}</span>
+      </div>
+      {% for q in s.result.questions %}
+      <div class="q">
+        <div class="qhead">
+          <b>Q{{ q.id }}</b> <span class="qt">{{ q.question }}</span>
+          <span class="qm"><input type="number" name="q_{{ q.id }}" value="{{ '%g'|format(q.awarded) }}" min="0" max="{{ q.max }}" step="0.5"> / {{ '%g'|format(q.max) }}{% if q.teacher_changed %} <span class="pill">changed</span>{% endif %}</span>
+        </div>
+        <ul class="points">
+          {% for p in q.points %}
+          <li class="{{ 'got' if p.awarded >= p.max and p.max > 0 else ('part' if p.awarded > 0 else 'miss') }}">
+            <span class="pm">{{ '%g'|format(p.awarded) }}/{{ '%g'|format(p.max) }}</span> {{ p.text }}
+            {% if p.evidence %}<span class="ev">“{{ p.evidence }}”</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% if q.feedback %}<p class="fb">{{ q.feedback }}</p>{% endif %}
+      </div>
+      {% endfor %}
+      <button class="btn" name="action" value="override">Save my changes to marks</button>
+    </form>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('delete_script', script_id=s.id) }}" class="danger-zone" onsubmit="return confirm('Remove this student script?')">
+      <button class="btn link-danger">Remove script</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

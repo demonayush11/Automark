@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="crumb"><a href="{{ url_for('home') }}">Tests</a> / {{ t.name }}</p>
+<div class="head-row">
+  <h1>{{ t.name }}</h1>
+  <div class="actions">
+    <a class="btn" href="{{ url_for('edit_scheme', test_id=t.id) }}">Marking scheme ({{ t.scheme.questions|length }} Q, {{ '%g'|format(max_total) }} marks)</a>
+    <a class="btn" href="{{ url_for('export_csv', test_id=t.id) }}">Download CSV</a>
+  </div>
+</div>
+
+<div class="card upload">
+  <form method="post" action="{{ url_for('upload_scripts', test_id=t.id) }}" enctype="multipart/form-data" id="up">
+    <div class="tabs">
+      <label><input type="radio" name="mode" value="one" checked onchange="m()"> One student (one or more pages)</label>
+      <label><input type="radio" name="mode" value="many" onchange="m()"> Many students (one file each, file name = student name)</label>
+    </div>
+    <div class="row" id="who">
+      <input name="student" placeholder="Student name">
+      <input name="roll" placeholder="Roll no.">
+    </div>
+    <div class="row">
+      <input type="file" name="files" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" required>
+      <button class="btn primary" onclick="this.textContent='Reading handwriting…'">Upload &amp; read</button>
+    </div>
+    <p class="hint">Photos or PDFs. For best results: flat page, good light, whole page in the frame.</p>
+  </form>
+</div>
+
+{% if scripts %}
+<div class="head-row">
+  <h2>Students ({{ scripts|length }})</h2>
+  {% if scripts|selectattr('status','equalto','read')|list %}
+  <form method="post" action="{{ url_for('mark_all', test_id=t.id) }}">
+    <button class="btn primary" onclick="this.textContent='Marking…'">Mark all unmarked ({{ scripts|selectattr('status','equalto','read')|list|length }})</button>
+  </form>
+  {% endif %}
+</div>
+<table class="list">
+  <thead><tr><th>Student</th><th>Roll</th><th>Read by</th><th>Words read</th><th>Unsure</th><th>Marks</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for s in scripts %}
+  <tr onclick="location='{{ url_for('script_page', script_id=s.id) }}'">
+    <td><a href="{{ url_for('script_page', script_id=s.id) }}">{{ s.student }}</a></td>
+    <td>{{ s.roll }}</td>
+    <td class="muted">{{ reader_name(s.reader) }}</td>
+    <td>{{ s.words }}</td>
+    <td>{% if s.words %}{{ s.low_conf }} <span class="muted">({{ s.low_conf|pct(s.words) }})</span>{% endif %}</td>
+    <td>{% if s.result %}<b>{{ '%g'|format(s.result.total) }}</b> / {{ '%g'|format(s.result.max) }}{% endif %}</td>
+    <td><span class="status {{ s.status }}">{{ {'read':'needs marking','marked':'marked','error':'error','uploaded':'uploaded'}[s.status] }}</span></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<form method="post" action="{{ url_for('delete_test', test_id=t.id) }}" class="danger-zone" onsubmit="return confirm('Delete this test and all its scripts?')">
+  <button class="btn link-danger">Delete test</button>
+</form>
+<script>
+function m(){document.getElementById('who').style.display=document.querySelector('[name=mode]:checked').value=='one'?'flex':'none'}
+</script>
+{% endblock %}

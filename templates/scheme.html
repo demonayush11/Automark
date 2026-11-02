@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="crumb"><a href="{{ url_for('home') }}">Tests</a> / <a href="{{ url_for('test_page', test_id=t.id) }}">{{ t.name }}</a> / Marking scheme</p>
+<h1>Check the marking scheme</h1>
+<div class="two">
+  <form method="post" class="card">
+    <label>Test name <input name="name" value="{{ t.name }}"></label>
+    <label>Questions and marking points
+      <textarea name="scheme_text" rows="22" class="mono">{{ text }}</textarea>
+    </label>
+    <button class="btn primary">Save scheme →</button>
+  </form>
+  <aside class="card help">
+    <h3>Format</h3>
+<pre>Q1 [3] Question text
+- first marking point (1)
+- second point (2)
+
+Q2a [2] Next question
+- point (2)</pre>
+    <ul>
+      <li><b>[3]</b> = total marks for the question</li>
+      <li>Each <b>-</b> line is one thing the answer must say, with its marks in brackets.</li>
+      <li>Points should add up to the total.</li>
+    </ul>
+    <h3>Summary</h3>
+    <table class="mini">
+      {% for q in t.scheme.questions %}
+      <tr><td>Q{{ q.id }}</td><td>{{ q.points|length }} points</td><td class="r">{{ '%g'|format(q.max_marks) }}</td></tr>
+      {% endfor %}
+      <tr class="sum"><td colspan="2">Total</td><td class="r">{{ '%g'|format(t.scheme.questions|sum(attribute='max_marks')) }}</td></tr>
+    </table>
+  </aside>
+</div>
+{% endblock %}

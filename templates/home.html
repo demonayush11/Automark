@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="head-row">
+  <h1>Tests</h1>
+  <a class="btn primary" href="{{ url_for('new_test') }}">+ New test</a>
+</div>
+{% if not tests %}
+  <div class="empty">
+    <h2>No tests yet</h2>
+    <p>Create a test, upload its marking scheme, then upload students' answer scripts.</p>
+    <ol class="steps">
+      <li>Upload marking scheme</li><li>Check the scheme</li><li>Upload answer scripts</li><li>Check text &amp; marks</li><li>Download CSV</li>
+    </ol>
+  </div>
+{% else %}
+<table class="list">
+  <thead><tr><th>Test</th><th>Scripts</th><th>Marked</th><th>Created</th></tr></thead>
+  <tbody>
+  {% for t in tests %}
+    <tr onclick="location='{{ url_for('test_page', test_id=t.id) }}'">
+      <td><a href="{{ url_for('test_page', test_id=t.id) }}">{{ t.name }}</a></td>
+      <td>{{ t.n_scripts }}</td><td>{{ t.n_marked or 0 }}</td>
+      <td class="muted">{{ t.created | date }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}
