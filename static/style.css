@@ -80,3 +80,19 @@ table.mini{width:100%;font-size:13.5px;border-collapse:collapse} .mini td{paddin
 .fb{font-size:13.5px;margin:6px 0 0;color:#3a4240}
 code{font-family:var(--mono);background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12.5px}
 @media (max-width:900px){.two,.review{grid-template-columns:1fr}.pages{position:static;max-height:none}}
+
+/* photo quality check */
+.banner{border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;border:1px solid}
+.banner h3{margin:0 0 6px;font-size:16px}
+.banner p{margin:6px 0;font-size:14px}
+.banner .reasons{margin:4px 0 8px;padding-left:20px;font-size:14px}
+.banner .tips{color:#3a4240}
+.banner form{margin:10px 0 0}
+.banner.warn{background:#fff6dc;border-color:#ecd28a;color:#5c4400}
+.banner.bad{background:var(--bad-2);border-color:#f2c2bd;color:#6d1a14}
+.flash.warn{background:#fff6dc;border-color:#ecd28a;color:#5c4400}
+.qpill{font-size:12px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap}
+.qpill.ok{background:var(--accent-2);color:var(--accent)}
+.qpill.warn{background:#fff1c7;color:#8a6100}
+.qpill.bad{background:var(--bad-2);color:var(--bad)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}

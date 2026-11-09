@@ -41,9 +41,12 @@ def connect():
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(scripts)")}
-    if "reader" not in cols:                       # upgrade databases made by the first version
-        con.execute("ALTER TABLE scripts ADD COLUMN reader TEXT NOT NULL DEFAULT 'own'")
-        con.commit()
+    # upgrade databases made by earlier versions
+    if "quality" not in cols:        # photo quality check: ok | warn | bad
+        con.execute("ALTER TABLE scripts ADD COLUMN quality TEXT NOT NULL DEFAULT 'ok'")
+    if "quality_reasons_json" not in cols:
+        con.execute("ALTER TABLE scripts ADD COLUMN quality_reasons_json TEXT NOT NULL DEFAULT '[]'")
+    con.commit()
     return con
 
 
@@ -51,7 +54,7 @@ def row_to_dict(row):
     if row is None:
         return None
     d = dict(row)
-    for key in ("scheme_json", "files_json", "previews_json", "result_json"):
+    for key in ("scheme_json", "files_json", "previews_json", "result_json", "quality_reasons_json"):
         if key in d:
             d[key[:-5]] = json.loads(d[key]) if d[key] else None
     return d
@@ -62,27 +65,21 @@ def now():
 
 
 ENGINE_NAMES = {"similarity": "Sentence-BERT", "keywords": "Keywords"}
-READER_MODES = ("auto", "own", "trocr")
 
 
 def load_settings():
-    """engine = similarity | keywords (how answers are marked)
-    reader = auto | own | trocr     (who reads the handwriting). Everything runs locally."""
-    s = {"engine": "similarity", "reader": "auto"}
+    """engine = similarity | keywords (how answers are marked). Everything runs locally."""
+    s = {"engine": "similarity"}
     if os.path.exists(SETTINGS_PATH):
         with open(SETTINGS_PATH, encoding="utf-8") as fh:
-            saved = json.load(fh)
-        s["engine"] = saved.get("engine", s["engine"])
-        s["reader"] = saved.get("reader", s["reader"])
+            s["engine"] = json.load(fh).get("engine", s["engine"])
     if s["engine"] not in ENGINE_NAMES:          # old settings (gemini/groq/offline) -> local engine
         s["engine"] = "keywords" if s["engine"] == "offline" else "similarity"
-    if s["reader"] not in READER_MODES:
-        s["reader"] = "auto"
     s["engine_name"] = ENGINE_NAMES[s["engine"]]
     return s
 
 
-def save_settings(engine, reader):
+def save_settings(engine):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
-        json.dump({"engine": engine, "reader": reader}, fh)   # old API keys are dropped
+        json.dump({"engine": engine}, fh)     # older keys (API keys, reader mode) are dropped

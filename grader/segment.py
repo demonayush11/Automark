@@ -40,7 +40,8 @@ def noise_level(gray):
 
 
 def clean_page(bgr):
-    """Grayscale page with even white background (removes phone-photo shadows and grain)."""
+    """Grayscale page with even white background (removes phone-photo shadows and grain).
+    Returns (gray_page, tilt_angle_in_degrees_that_was_corrected)."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     scale = TARGET_WIDTH / gray.shape[1]
     gray = cv2.resize(gray, None, fx=scale, fy=scale,
@@ -63,21 +64,26 @@ def _ink_mask(gray):
 def _deskew(gray, max_angle=15.0):
     """Straighten a tilted page: try rotations, keep the one where text rows are sharpest
     (rows of the page alternate clearly between full of ink and empty).
-    Coarse search every 1 degree up to +-15, then fine search every 0.1 degree around the best."""
+    Coarse search every 1 degree up to +-15, then fine search every 0.1 degree around the best.
+    Returns (straightened_page, angle). An angle near the +-15 limit means the page may be tilted more."""
     small = cv2.resize(_ink_mask(gray), None, fx=0.25, fy=0.25)
     h, w = small.shape
+    if not small.any():                       # no ink at all: nothing to straighten
+        return gray, 0.0
 
     def score(angle):
         m = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1)
         return np.var(cv2.warpAffine(small, m, (w, h)).sum(axis=1))
 
     best = max(np.arange(-max_angle, max_angle + 0.01, 1.0), key=score)
-    best = max(np.arange(best - 1.0, best + 1.01, 0.1), key=score)
+    fine = np.arange(best - 1.0, best + 1.01, 0.1)
+    best = max(fine[np.abs(fine) <= max_angle + 1e-9], key=score)     # stay within the search limit
+    best = float(round(best, 1))
     if abs(best) < 0.1:
-        return gray
+        return gray, 0.0
     h, w = gray.shape
     m = cv2.getRotationMatrix2D((w / 2, h / 2), best, 1)
-    return cv2.warpAffine(gray, m, (w, h), borderValue=255)
+    return cv2.warpAffine(gray, m, (w, h), borderValue=255), best
 
 
 # ---------------------------------------------------------------- 3. ink mask without ruled lines
@@ -224,8 +230,11 @@ def split_words(comps, line_h):
 
 def segment_page(bgr):
     """Full pipeline for one page.
-    Returns (gray_page, lines) where lines = [[{"box": (x0,y0,x1,y1), "img": crop}, ...], ...]."""
-    gray = clean_page(bgr)
+    Returns (gray_page, lines, info):
+      lines = [[{"box": (x0,y0,x1,y1), "img": crop}, ...], ...]   (one list of words per text line)
+      info  = {"angle": tilt in degrees that was corrected}"""
+    gray, angle = clean_page(bgr)
+    info = {"angle": angle}
     mask, rules = ink_without_rules(gray)
     clean = gray.copy()
     clean[rules > 0] = 255                     # erase ruled lines from what the model sees
@@ -235,7 +244,7 @@ def segment_page(bgr):
     letter_h = _letter_height(stats) if n > 1 else None
     bands = find_lines(mask, letter_h)
     if not bands:
-        return gray, []
+        return gray, [], info
     typical = float(np.median([b - a for a, b in bands]))
     min_area = max(12, int(0.004 * typical * typical))
 
@@ -271,7 +280,7 @@ def segment_page(bgr):
             crop[mine == 0] = 255
             words.append({"box": (int(X0), int(Y0), int(X1), int(Y1)), "img": crop})
         out.append(words)
-    return gray, out
+    return gray, out, info
 
 
 def draw_boxes(gray, lines, texts=None):

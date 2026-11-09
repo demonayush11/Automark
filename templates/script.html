@@ -10,6 +10,19 @@
   </div>
 </div>
 
+{% if s.quality in ('warn', 'bad') %}
+<div class="banner {{ s.quality }}">
+  <h3>{% if s.quality == 'bad' %}This photo could not be read reliably — please re-upload a clearer one.{% else %}Please check this photo — the reading may contain mistakes.{% endif %}</h3>
+  <ul class="reasons">{% for r in s.quality_reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+  <p class="tips"><b>To retake:</b> {{ retake_tips|join(' ') }}</p>
+  {% if s.quality == 'bad' %}<p>Marking is blocked for this student until you re-upload, or choose <b>Mark anyway</b>.</p>{% else %}<p>You can still check the text and mark.</p>{% endif %}
+  <form method="post" action="{{ url_for('reupload_script', script_id=s.id) }}" enctype="multipart/form-data" class="row">
+    <input type="file" name="files" multiple required accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff">
+    <button class="btn {{ 'primary' if s.quality == 'bad' }}" onclick="this.textContent='Reading…'">Re-upload this script</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="review">
   <section class="pages card">
     <h3>Answer sheet <span class="legend"><i class="g"></i> read <i class="o"></i> unsure</span></h3>
@@ -27,17 +40,21 @@
       </div>
       <textarea name="text" rows="16" class="mono">{{ s.text }}</textarea>
       <p class="hint">Words marked <code>[?]</code> were hard to read — check them against the page. Fix any wrong words; marking uses this text.
-        {% if s.words %}Read {{ s.words }} words, {{ s.low_conf }} unsure.{% endif %}
-        Read by <b>{{ reader_name(s.reader) }}</b>.{% if s.reader != 'own' %} Boxes on the left show the line and word cutting; TrOCR read whole lines.{% endif %}</p>
+        {% if s.words %}Read {{ s.words }} words, {{ s.low_conf }} unsure.{% endif %}</p>
       <div class="row">
         <select name="engine">
           <option value="similarity" {{ 'selected' if settings.engine=='similarity' }}>Mark with Sentence-BERT</option>
           <option value="keywords" {{ 'selected' if settings.engine=='keywords' }}>Mark with keywords</option>
         </select>
+        {% if s.quality == 'bad' %}
+        <button class="btn primary" name="action" value="mark" disabled title="Re-upload a clearer photo first">{{ 'Mark again' if s.result else 'Mark' }}</button>
+        <button class="btn" name="action" value="mark_force" onclick="if(!confirm('The photo could not be read reliably, so these marks may be wrong. Mark anyway?')) return false; this.textContent='Marking…'">Mark anyway</button>
+        {% else %}
         <button class="btn primary" name="action" value="mark" onclick="this.textContent='Marking…'">{{ 'Mark again' if s.result else 'Mark' }}</button>
+        {% endif %}
         <button class="btn" name="action" value="save_text">Save text</button>
-        <button class="btn" name="action" value="read_trocr" formnovalidate onclick="this.textContent='Reading… (first time downloads TrOCR)'">Read with TrOCR</button>
-        <button class="btn" name="action" value="read_own" formnovalidate onclick="this.textContent='Reading…'">Read with own model</button>
+        <button class="btn" name="action" value="reread" formnovalidate onclick="this.textContent='Reading…'">Read again</button>
+        <button class="btn" name="action" value="save_training" title="After correcting the text: store each word image with its correct spelling, for fine-tuning the model" onclick="this.textContent='Saving…'">Save as training data</button>
       </div>
     </form>
 

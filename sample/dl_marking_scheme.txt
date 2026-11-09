@@ -1,0 +1,6 @@
+Q1 [5] A fully connected autoencoder has the architecture 784-256-32-256-784 (every layer has biases). Calculate the total number of trainable parameters. Also find the compression ratio achieved at the bottleneck layer.
+- encoder layer 1 parameters 784 x 256 + 256 = 200960 (1)
+- encoder layer 2 parameters 256 x 32 + 32 = 8224 (1)
+- decoder layer parameters 32 x 256 + 256 = 8448 and 256 x 784 + 784 = 201488 (1)
+- total trainable parameters 419120 (1)
+- compression ratio 784 / 32 = 24.5 (1)

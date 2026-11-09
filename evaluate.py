@@ -1,5 +1,5 @@
 """
-Accuracy test for the reading pipeline (own model only, no backup reader).
+Accuracy test for the reading pipeline (our own model) and for the photo quality check.
 
 Takes the two sample sheets (photo + scan), makes damaged copies (blur, noise, low resolution,
 shadow, tilt, JPEG compression), reads each one and compares with the correct text.
@@ -7,6 +7,10 @@ shadow, tilt, JPEG compression), reads each one and compares with the correct te
   CER = character error rate = wrong/missing/extra letters  / total letters
   WER = word error rate      = wrong/missing/extra words    / total words
   (lower is better; capitals and punctuation are ignored)
+
+It also runs the quality check (reader.page_quality) on every case and reports whether it flags
+the cases that were read badly (CER > 12%), plus two pages that must always be flagged:
+a photo tilted 20 degrees and a blank white page.
 
 Run:  python evaluate.py              -> prints a table and writes evaluation_results.csv
       python evaluate.py --no-lexicon -> same, with dictionary correction switched off
@@ -113,28 +117,57 @@ def cer_wer(truth, out):
     return cer, wer
 
 
+SHOULD_FLAG_CER = 12.0   # a case "should be flagged" if more than 12% of letters are wrong
+
+
 def run(lexicon=True, out_csv=os.path.join(HERE, "evaluation_results.csv")):
     from grader import htr_model
     htr_model.USE_LEXICON = lexicon
+    model = reader.get_model()
     rows = []
+    print(f"{'sample':6} {'damage':14} {'CER':>6} {'WER':>6} {'unsure':>7}  quality  reasons")
     for sample, path in SAMPLES.items():
         page = load_pages(path)[0]
         for name, fn in DAMAGE:
-            r = reader._own_read_page(reader.get_model(), fn(page))
+            r = reader._own_read_page(model, fn(page))
+            q = reader.page_quality(r)
             cer, wer = cer_wer(TRUTH, r["text"])
-            unsure = 100 * r["low"] / max(1, r["words"])
-            rows.append({"sample": sample, "damage": name, "words": r["words"], "unsure_pct": round(unsure, 1),
-                         "backup_fires": unsure > 100 * reader.AUTO_SHARE,
-                         "CER_pct": round(100 * cer, 1), "WER_pct": round(100 * wer, 1)})
-            print(f"{sample:6} {name:14} CER {100 * cer:5.1f}%  WER {100 * wer:5.1f}%  "
-                  f"unsure {unsure:5.1f}%  backup {'yes' if rows[-1]['backup_fires'] else 'no'}")
-    with open(out_csv, "w", newline="") as fh:
+            rows.append({"sample": sample, "damage": name, "words": q["words"], "unsure_pct": q["unsure_pct"],
+                         "CER_pct": round(100 * cer, 1), "WER_pct": round(100 * wer, 1),
+                         "quality": q["level"], "reasons": " | ".join(q["reasons"]),
+                         "should_flag": 100 * cer > SHOULD_FLAG_CER, "flagged": q["level"] != "ok"})
+            print(f"{sample:6} {name:14} {100 * cer:5.1f}% {100 * wer:5.1f}% {q['unsure_pct']:6.1f}%  "
+                  f"{q['level']:7}  {'; '.join(q['reasons'])}")
+    with open(out_csv, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
     avg = lambda key: sum(r[key] for r in rows) / len(rows)
     print(f"\nAverage CER {avg('CER_pct'):.1f}%   average WER {avg('WER_pct'):.1f}%   -> {out_csv}")
-    return rows
+
+    # ---- does the quality check flag the right cases?
+    count = lambda f, s: sum(1 for r in rows if r["flagged"] == f and r["should_flag"] == s)
+    print(f"\nQuality check vs. 'should be flagged' (CER > {SHOULD_FLAG_CER:g}%):")
+    print(f"{'':22}{'should flag':>12}{'should not':>12}")
+    print(f"{'flagged (warn/bad)':22}{count(True, True):>12}{count(True, False):>12}")
+    print(f"{'not flagged (ok)':22}{count(False, True):>12}{count(False, False):>12}")
+    missed = [f"{r['sample']} {r['damage']}" for r in rows if r["should_flag"] and not r["flagged"]]
+    extra = [f"{r['sample']} {r['damage']}" for r in rows if r["flagged"] and not r["should_flag"]]
+    print("Missed (bad reading, not flagged):", ", ".join(missed) or "none")
+    print("False alarms (good reading, flagged):", ", ".join(extra) or "none")
+
+    # ---- pages that must always be flagged
+    print("\nExtra checks (must be flagged):")
+    photo = load_pages(SAMPLES["photo"])[0]
+    extra_cases = [("photo tilted 20 degrees", tilt(photo, 20)),
+                   ("blank white page", np.full((2400, 1700, 3), 255, np.uint8))]
+    all_ok = True
+    for name, img in extra_cases:
+        q = reader.page_quality(reader._own_read_page(model, img))
+        passed = q["level"] != "ok"
+        all_ok &= passed
+        print(f"  {'PASS' if passed else 'FAIL'}  {name:24} {q['level']:5} {'; '.join(q['reasons'])}")
+    return rows, all_ok
 
 
 if __name__ == "__main__":

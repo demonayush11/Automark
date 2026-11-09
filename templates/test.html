@@ -30,20 +30,25 @@
 {% if scripts %}
 <div class="head-row">
   <h2>Students ({{ scripts|length }})</h2>
-  {% if scripts|selectattr('status','equalto','read')|list %}
+  {% set markable = scripts|selectattr('status','equalto','read')|rejectattr('quality','equalto','bad')|list %}
+  {% if markable %}
   <form method="post" action="{{ url_for('mark_all', test_id=t.id) }}">
-    <button class="btn primary" onclick="this.textContent='Marking…'">Mark all unmarked ({{ scripts|selectattr('status','equalto','read')|list|length }})</button>
+    <button class="btn primary" onclick="this.textContent='Marking…'">Mark all unmarked ({{ markable|length }})</button>
   </form>
   {% endif %}
 </div>
+{% set to_redo = scripts|selectattr('quality','equalto','bad')|list %}
+{% set to_check = scripts|selectattr('quality','equalto','warn')|list %}
+{% if to_redo %}<div class="flash error">{{ to_redo|length }} photo(s) need re-uploading: {{ to_redo|map(attribute='student')|join(', ') }}. They are not marked by "Mark all".</div>{% endif %}
+{% if to_check %}<div class="flash warn">{{ to_check|length }} photo(s) should be checked: {{ to_check|map(attribute='student')|join(', ') }}.</div>{% endif %}
 <table class="list">
-  <thead><tr><th>Student</th><th>Roll</th><th>Read by</th><th>Words read</th><th>Unsure</th><th>Marks</th><th>Status</th></tr></thead>
+  <thead><tr><th>Student</th><th>Roll</th><th>Photo</th><th>Words read</th><th>Unsure</th><th>Marks</th><th>Status</th></tr></thead>
   <tbody>
   {% for s in scripts %}
   <tr onclick="location='{{ url_for('script_page', script_id=s.id) }}'">
     <td><a href="{{ url_for('script_page', script_id=s.id) }}">{{ s.student }}</a></td>
     <td>{{ s.roll }}</td>
-    <td class="muted">{{ reader_name(s.reader) }}</td>
+    <td><span class="qpill {{ s.quality }}" title="{{ s.quality_reasons|join(' ') }}">{{ quality_label[s.quality] }}</span></td>
     <td>{{ s.words }}</td>
     <td>{% if s.words %}{{ s.low_conf }} <span class="muted">({{ s.low_conf|pct(s.words) }})</span>{% endif %}</td>
     <td>{% if s.result %}<b>{{ '%g'|format(s.result.total) }}</b> / {{ '%g'|format(s.result.max) }}{% endif %}</td>

@@ -3,17 +3,19 @@
 <h1>Settings</h1>
 <form method="post" class="card narrow">
   <fieldset>
-    <legend>Reading handwriting</legend>
-    <label class="radio"><input type="radio" name="reader" value="auto" {{ 'checked' if settings.reader == 'auto' }}> Own model, TrOCR if unsure (recommended) — a page where over 25% of words are unsure is read again by TrOCR</label>
-    <label class="radio"><input type="radio" name="reader" value="own" {{ 'checked' if settings.reader == 'own' }}> Own model only (CNN + LSTM + CTC)</label>
-    <label class="radio"><input type="radio" name="reader" value="trocr" {{ 'checked' if settings.reader == 'trocr' }}> TrOCR only (<code>{{ trocr_model }}</code>)</label>
-  </fieldset>
-  <fieldset>
     <legend>Marking</legend>
     <label class="radio"><input type="radio" name="engine" value="similarity" {{ 'checked' if settings.engine == 'similarity' }}> Sentence-BERT — compares meaning, so different wording still gets marks (<code>{{ sbert_model }}</code>)</label>
     <label class="radio"><input type="radio" name="engine" value="keywords" {{ 'checked' if settings.engine == 'keywords' }}> Keywords — checks that the key words of each point appear</label>
   </fieldset>
-  <p class="hint">All models run on this computer. No API is called and no data leaves the computer. TrOCR (about 1.3 GB) and Sentence-BERT (about 90 MB) are downloaded once, the first time they are used.</p>
+  <p class="hint">Handwriting is read by our own model (CNN + BiLSTM + CTC with dictionary correction). If a photo is too hard to read, the app asks for a clearer photo instead of guessing.</p>
+  <p class="hint">All models run on this computer. No API is called and no data leaves the computer. Sentence-BERT (about 90 MB) is downloaded once, the first time it is used.</p>
   <button class="btn primary">Save</button>
 </form>
+
+<div class="card narrow">
+  <h3>Training data for fine-tuning</h3>
+  <p>{{ training.words }} words from {{ training.students }} student(s) saved.</p>
+  <p class="hint">On a student's page, correct the text, then click <b>Save as training data</b>. Download this zip and use it with <code>finetune.py</code> on Google Colab (see README).</p>
+  {% if training.words %}<a class="btn" href="{{ url_for('training_zip') }}">Download training_data.zip</a>{% endif %}
+</div>
 {% endblock %}

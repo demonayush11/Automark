@@ -4,7 +4,7 @@ AutoMark - teacher web app.
 Run:  python app.py      then open  http://127.0.0.1:5000
 
 Flow: New test -> upload marking scheme -> check scheme -> upload student scripts
-      -> own model reads handwriting (TrOCR for unsure pages) -> teacher fixes text
+      -> own model reads handwriting -> photo quality check (re-upload if unreadable) -> teacher fixes text
       -> Sentence-BERT (or keywords) marks -> results / CSV.   Everything runs locally, no API.
 """
 import csv
@@ -74,28 +74,26 @@ def _add_scheme_words(con, script_id):
         lexicon.add_words(re.findall(r"[A-Za-z]+(?:['-][A-Za-z]+)*", text))
 
 
-def _read_into(con, script_id, paths, mode=None):
-    st = db.load_settings()
+def _read_into(con, script_id, paths):
+    """Read a script with our own model, run the photo quality check, store both."""
     _add_scheme_words(con, script_id)
     prefix = os.path.join(db.UPLOAD_DIR, f"preview_{script_id}_{uuid.uuid4().hex[:6]}")
-    r = read_script(paths, preview_prefix=prefix, mode=mode or st["reader"])
+    r = read_script(paths, preview_prefix=prefix)
     previews = [os.path.basename(p["preview"]) for p in r["pages"] if p["preview"]]
-    con.execute("UPDATE scripts SET text=?, words=?, low_conf=?, previews_json=?, reader=?, status='read', "
-                "result_json=NULL WHERE id=?",
-                (r["text"], r["words"], r["low_conf"], json.dumps(previews), r["reader"], script_id))
-    if r["problems"]:
-        flash("TrOCR could not run, kept own-model text. " + "; ".join(r["problems"])[:400], "error")
+    con.execute("UPDATE scripts SET text=?, words=?, low_conf=?, previews_json=?, quality=?, "
+                "quality_reasons_json=?, status='read', result_json=NULL WHERE id=?",
+                (r["text"], r["words"], r["low_conf"], json.dumps(previews), r["quality"],
+                 json.dumps(r["reasons"]), script_id))
     return r
 
 
-def _reader_name(code):
-    names = {"own": "own model", "trocr": "TrOCR"}
-    return " + ".join(names.get(c, c) for c in (code or "own").split("+"))
+QUALITY_LABEL = {"ok": "OK", "warn": "Check", "bad": "Re-upload"}
 
 
 @app.context_processor
 def _inject():
-    return {"settings": db.load_settings(), "reader_name": _reader_name}
+    from grader.reader import RETAKE_TIPS
+    return {"settings": db.load_settings(), "quality_label": QUALITY_LABEL, "retake_tips": RETAKE_TIPS}
 
 
 # ---------------------------------------------------------------- pages
@@ -112,11 +110,18 @@ def home():
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     if request.method == "POST":
-        db.save_settings(request.form.get("engine", "similarity"), request.form.get("reader", "auto"))
+        db.save_settings(request.form.get("engine", "similarity"))
         flash("Settings saved.")
         return redirect(url_for("home"))
-    from grader.trocr_reader import TROCR_MODEL
-    return render_template("settings.html", sbert_model=marker.SBERT_MODEL, trocr_model=TROCR_MODEL)
+    from grader import training_data
+    return render_template("settings.html", sbert_model=marker.SBERT_MODEL, training=training_data.stats())
+
+
+@app.route("/training_data.zip")
+def training_zip():
+    from grader import training_data
+    return Response(training_data.zip_bytes(), mimetype="application/zip",
+                    headers={"Content-Disposition": "attachment; filename=training_data.zip"})
 
 
 @app.route("/test/new", methods=["GET", "POST"])
@@ -198,19 +203,24 @@ def upload_scripts(test_id):
         flash(str(e), "error")
         return redirect(url_for("test_page", test_id=test_id))
 
-    done, failed = 0, []
+    done, failed, needs = 0, [], []
     for student, roll, paths in groups:
         cur = con.execute("INSERT INTO scripts(test_id, student, roll, files_json, created) VALUES (?,?,?,?,?)",
                           (test_id, student, roll, json.dumps([os.path.basename(p) for p in paths]), db.now()))
         try:
-            _read_into(con, cur.lastrowid, paths)
+            r = _read_into(con, cur.lastrowid, paths)
             done += 1
+            if r["quality"] == "bad":
+                needs.append(student)
         except Exception as e:  # noqa: BLE001
             con.execute("UPDATE scripts SET status='error', text=? WHERE id=?", (f"Reading failed: {e}", cur.lastrowid))
             failed.append(student)
         con.commit()
     flash(f"Read {done} script(s)." + (f" Failed: {', '.join(failed)}" if failed else ""),
           "error" if failed else "info")
+    if needs:
+        flash(f"{len(needs)} photo(s) could not be read reliably and should be re-uploaded: {', '.join(needs)}.",
+              "error")
     if mode == "one" and done == 1:
         return redirect(url_for("script_page", script_id=cur.lastrowid))
     return redirect(url_for("test_page", test_id=test_id))
@@ -223,13 +233,19 @@ def script_page(script_id):
     t = _get_test(con, s["test_id"])
     if request.method == "POST":
         action = request.form.get("action")
+        force = action == "mark_force"            # "Mark anyway" (teacher confirmed in the browser)
+        if force:
+            action = "mark"
         if action in ("save_text", "mark"):
             text = request.form.get("text", "")
             con.execute("UPDATE scripts SET text=?, student=?, roll=? WHERE id=?",
                         (text, request.form.get("student", s["student"]), request.form.get("roll", s["roll"]),
                          script_id))
             con.commit()
-            if action == "mark":
+            if action == "mark" and s["quality"] == "bad" and not force:
+                flash("This photo could not be read reliably. Re-upload a clearer photo, "
+                      "or use 'Mark anyway'.", "error")
+            elif action == "mark":
                 st = db.load_settings()
                 engine = request.form.get("engine") or st["engine"]
                 try:
@@ -253,13 +269,23 @@ def script_page(script_id):
             con.execute("UPDATE scripts SET result_json=? WHERE id=?", (json.dumps(res), script_id))
             con.commit()
             flash(f"Marks updated: {res['total']:g} / {res['max']:g}")
-        elif action in ("reread", "read_trocr", "read_own"):
+        elif action == "save_training":
+            # save the teacher's corrected text first, then store word images + correct spelling
+            text = request.form.get("text", s["text"])
+            con.execute("UPDATE scripts SET text=? WHERE id=?", (text, script_id))
+            con.commit()
+            from grader import training_data
+            from grader.reader import get_model
+            _add_scheme_words(con, script_id)
+            saved, skipped = training_data.export_script(dict(s, text=text), get_model().chars)
+            flash(f"Saved {saved} words as training data ({skipped} skipped: unchecked [?] words "
+                  f"or lines that could not be matched). Total now: {training_data.stats()['words']} words.")
+        elif action == "reread":
             paths = [os.path.join(db.UPLOAD_DIR, f) for f in s["files"]]
-            mode = {"read_trocr": "trocr", "read_own": "own"}.get(action)
             try:
-                r = _read_into(con, script_id, paths, mode)
+                _read_into(con, script_id, paths)
                 con.commit()
-                flash("Read again by " + _reader_name(r["reader"]) + ".")
+                flash("Handwriting read again.")
             except Exception as e:  # noqa: BLE001
                 flash(f"Reading failed: {e}", "error")
         return redirect(url_for("script_page", script_id=script_id))
@@ -271,13 +297,46 @@ def script_page(script_id):
     return render_template("script.html", s=s, t=t, nav=nav)
 
 
+@app.route("/script/<int:script_id>/reupload", methods=["POST"])
+def reupload_script(script_id):
+    """Replace all pages of one student's script with new files, then read them again."""
+    con = db.connect()
+    s = _get_script(con, script_id)
+    files = [f for f in request.files.getlist("files") if f and f.filename]
+    if not files:
+        flash("Choose the new photo(s) or PDF first.", "error")
+        return redirect(url_for("script_page", script_id=script_id))
+    try:
+        paths = [_save_upload(f, SCRIPT_EXT) for f in sorted(files, key=lambda f: f.filename)]
+    except ValueError as e:
+        flash(str(e), "error")
+        return redirect(url_for("script_page", script_id=script_id))
+    con.execute("UPDATE scripts SET files_json=? WHERE id=?",
+                (json.dumps([os.path.basename(p) for p in paths]), script_id))
+    try:
+        r = _read_into(con, script_id, paths)
+        con.commit()
+        flash({"ok": "New photo read. Quality looks fine.",
+               "warn": "New photo read. Please check the warnings below.",
+               "bad": "The new photo still could not be read reliably."}[r["quality"]],
+              "error" if r["quality"] == "bad" else "info")
+    except Exception as e:  # noqa: BLE001
+        con.execute("UPDATE scripts SET status='error', text=? WHERE id=?", (f"Reading failed: {e}", script_id))
+        con.commit()
+        flash(f"Reading failed: {e}", "error")
+    return redirect(url_for("script_page", script_id=s["id"]))
+
+
 @app.route("/test/<int:test_id>/mark_all", methods=["POST"])
 def mark_all(test_id):
     con = db.connect()
     t = _get_test(con, test_id)
     st = db.load_settings()
     n, errors = 0, []
-    for r in con.execute("SELECT * FROM scripts WHERE test_id=? AND status='read'", (test_id,)).fetchall():
+    skipped = [r["student"] for r in con.execute(
+        "SELECT student FROM scripts WHERE test_id=? AND status='read' AND quality='bad'", (test_id,))]
+    for r in con.execute("SELECT * FROM scripts WHERE test_id=? AND status='read' AND quality!='bad'",
+                         (test_id,)).fetchall():
         try:
             res = _grade(t["scheme"], r["text"], st["engine"])
             con.execute("UPDATE scripts SET result_json=?, status='marked' WHERE id=?", (json.dumps(res), r["id"]))
@@ -287,6 +346,8 @@ def mark_all(test_id):
             errors.append(f"{r['student']}: {e}")
     flash(f"Marked {n} script(s)." + (" Problems: " + "; ".join(errors[:3]) if errors else ""),
           "error" if errors else "info")
+    if skipped:
+        flash(f"Not marked, photo needs re-upload: {', '.join(skipped)}.", "error")
     return redirect(url_for("test_page", test_id=test_id))
 
 
