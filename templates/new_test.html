@@ -3,7 +3,7 @@
 <h1>New test</h1>
 <form method="post" enctype="multipart/form-data" class="card narrow">
   <label>Test name <input name="name" value="{{ name or '' }}" placeholder="e.g. Biology Unit Test 2" required></label>
-  <label>Marking scheme file <span class="muted">(PDF, Word, TXT{% if settings.engine == 'gemini' %}, photo or scan{% endif %})</span>
+  <label>Marking scheme file <span class="muted">(typed PDF, Word or TXT)</span>
     <input type="file" name="scheme_file" accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.webp">
   </label>
   <div class="or">or paste it</div>
@@ -12,7 +12,7 @@
 - using sunlight (1)
 - from carbon dioxide and water (1)
 Q2 [2] ...">{{ scheme_text or '' }}</textarea>
-  <p class="hint">{% if settings.engine != 'offline' %}{{ settings.engine_name }} will turn any scheme layout into questions and marking points. You can correct it on the next page.{% if settings.engine == 'groq' %} Groq reads typed files only — for a photo of the scheme, type it or use Gemini.{% endif %}{% else %}Offline mode: use the format shown above — <code>Q&lt;no&gt; [max marks]</code>, then one point per line with its marks in brackets.{% endif %}</p>
+  <p class="hint">Use the format shown above: <code>Q&lt;no&gt; [max marks]</code>, then one marking point per line with its marks in brackets. You can correct it on the next page.</p>
   <button class="btn primary">Read scheme →</button>
 </form>
 {% endblock %}

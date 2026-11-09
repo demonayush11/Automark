@@ -33,12 +33,21 @@ def load_pages(path):
 
 
 # ---------------------------------------------------------------- 2. clean
+def noise_level(gray):
+    """Estimated grain/noise strength: spread of (image - its 3x3 median), robust to edges."""
+    d = gray.astype(np.float32) - cv2.medianBlur(gray, 3).astype(np.float32)
+    return 1.4826 * float(np.median(np.abs(d - np.median(d))))
+
+
 def clean_page(bgr):
-    """Grayscale page with even white background (removes phone-photo shadows)."""
+    """Grayscale page with even white background (removes phone-photo shadows and grain)."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     scale = TARGET_WIDTH / gray.shape[1]
     gray = cv2.resize(gray, None, fx=scale, fy=scale,
                       interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+    sigma = noise_level(gray)
+    if sigma > 2.5:   # grainy photo (dark room, cheap camera): non-local-means denoising
+        gray = cv2.fastNlMeansDenoising(gray, None, h=1.5 * sigma, templateWindowSize=7, searchWindowSize=21)
     background = cv2.medianBlur(cv2.dilate(gray, np.ones((7, 7), np.uint8)), 51)
     norm = cv2.divide(gray, background, scale=255)
     return _deskew(norm)
@@ -51,18 +60,20 @@ def _ink_mask(gray):
     return mask
 
 
-def _deskew(gray, max_angle=5.0):
-    """Try small rotations; keep the one where text rows are sharpest."""
+def _deskew(gray, max_angle=15.0):
+    """Straighten a tilted page: try rotations, keep the one where text rows are sharpest
+    (rows of the page alternate clearly between full of ink and empty).
+    Coarse search every 1 degree up to +-15, then fine search every 0.1 degree around the best."""
     small = cv2.resize(_ink_mask(gray), None, fx=0.25, fy=0.25)
-    best, best_score = 0.0, -1
     h, w = small.shape
-    for angle in np.arange(-max_angle, max_angle + 0.01, 0.5):
+
+    def score(angle):
         m = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1)
-        rot = cv2.warpAffine(small, m, (w, h))
-        score = np.var(rot.sum(axis=1))
-        if score > best_score:
-            best, best_score = angle, score
-    if abs(best) < 0.25:
+        return np.var(cv2.warpAffine(small, m, (w, h)).sum(axis=1))
+
+    best = max(np.arange(-max_angle, max_angle + 0.01, 1.0), key=score)
+    best = max(np.arange(best - 1.0, best + 1.01, 0.1), key=score)
+    if abs(best) < 0.1:
         return gray
     h, w = gray.shape
     m = cv2.getRotationMatrix2D((w / 2, h / 2), best, 1)

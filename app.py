@@ -4,12 +4,14 @@ AutoMark - teacher web app.
 Run:  python app.py      then open  http://127.0.0.1:5000
 
 Flow: New test -> upload marking scheme -> check scheme -> upload student scripts
-      -> own model reads handwriting -> teacher fixes text -> Gemini (or offline) marks -> results / CSV
+      -> own model reads handwriting (TrOCR for unsure pages) -> teacher fixes text
+      -> Sentence-BERT (or keywords) marks -> results / CSV.   Everything runs locally, no API.
 """
 import csv
 import io
 import json
 import os
+import re
 import uuid
 
 from flask import (Flask, Response, abort, flash, redirect, render_template, request,
@@ -54,37 +56,46 @@ def _get_script(con, script_id):
     return s
 
 
-def _grade(scheme, text, engine, settings):
-    if engine == "gemini":
-        return marker.grade_with_gemini(scheme, text, settings["api_key"])
-    if engine == "groq":
-        return marker.grade_with_groq(scheme, text, settings["groq_key"])
-    return marker.grade_offline(scheme, text)
+def _grade(scheme, text, engine):
+    if engine == "similarity":
+        return marker.grade_similarity(scheme, text)
+    return marker.grade_keywords(scheme, text)
+
+
+def _add_scheme_words(con, script_id):
+    """Give the dictionary correction the subject words of this test's marking scheme."""
+    from grader import lexicon
+    row = con.execute("SELECT t.scheme_json FROM scripts s JOIN tests t ON t.id = s.test_id WHERE s.id=?",
+                      (script_id,)).fetchone()
+    if row:
+        scheme = json.loads(row[0])
+        text = " ".join(q.get("question", "") + " " + " ".join(p["text"] for p in q.get("points", []))
+                        for q in scheme.get("questions", []))
+        lexicon.add_words(re.findall(r"[A-Za-z]+(?:['-][A-Za-z]+)*", text))
 
 
 def _read_into(con, script_id, paths, mode=None):
     st = db.load_settings()
+    _add_scheme_words(con, script_id)
     prefix = os.path.join(db.UPLOAD_DIR, f"preview_{script_id}_{uuid.uuid4().hex[:6]}")
-    r = read_script(paths, preview_prefix=prefix, mode=mode or st["reader"], settings=st)
+    r = read_script(paths, preview_prefix=prefix, mode=mode or st["reader"])
     previews = [os.path.basename(p["preview"]) for p in r["pages"] if p["preview"]]
     con.execute("UPDATE scripts SET text=?, words=?, low_conf=?, previews_json=?, reader=?, status='read', "
                 "result_json=NULL WHERE id=?",
                 (r["text"], r["words"], r["low_conf"], json.dumps(previews), r["reader"], script_id))
-    if r["ai_problems"]:
-        flash("AI reading failed, kept own-model text. " + "; ".join(r["ai_problems"])[:400], "error")
+    if r["problems"]:
+        flash("TrOCR could not run, kept own-model text. " + "; ".join(r["problems"])[:400], "error")
     return r
 
 
 def _reader_name(code):
-    names = {"own": "own model", "ai:groq": "AI (Groq)", "ai:gemini": "AI (Gemini)"}
+    names = {"own": "own model", "trocr": "TrOCR"}
     return " + ".join(names.get(c, c) for c in (code or "own").split("+"))
 
 
 @app.context_processor
 def _inject():
-    st = db.load_settings()
-    from grader.ai_reader import pick_engine
-    return {"settings": st, "reader_name": _reader_name, "ai_reader": pick_engine(st)}
+    return {"settings": db.load_settings(), "reader_name": _reader_name}
 
 
 # ---------------------------------------------------------------- pages
@@ -101,11 +112,11 @@ def home():
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     if request.method == "POST":
-        db.save_settings(request.form.get("api_key", ""), request.form.get("groq_key", ""),
-                         request.form.get("engine", "groq"), request.form.get("reader", "auto"))
+        db.save_settings(request.form.get("engine", "similarity"), request.form.get("reader", "auto"))
         flash("Settings saved.")
         return redirect(url_for("home"))
-    return render_template("settings.html", model=marker.GEMINI_MODEL, groq_model=marker.GROQ_MODEL)
+    from grader.trocr_reader import TROCR_MODEL
+    return render_template("settings.html", sbert_model=marker.SBERT_MODEL, trocr_model=TROCR_MODEL)
 
 
 @app.route("/test/new", methods=["GET", "POST"])
@@ -115,20 +126,14 @@ def new_test():
     name = request.form.get("name", "").strip() or "Untitled test"
     pasted = request.form.get("scheme_text", "").strip()
     f = request.files.get("scheme_file")
-    s = db.load_settings()
     try:
         if f and f.filename:
             path = _save_upload(f, SCHEME_EXT)
-            if s["engine"] == "gemini":
-                scheme = marker.parse_scheme_with_gemini(path, s["api_key"])
-            elif s["engine"] == "groq":
-                scheme = marker.parse_scheme_with_groq(path, s["groq_key"])
-            else:
-                text = marker.extract_file_text(path)
-                if not text.strip():
-                    raise ValueError("Offline mode can only read typed PDF / Word / TXT schemes. "
-                                     "Add a Gemini key in Settings, or paste the scheme as text.")
-                scheme = marker.parse_scheme_simple(text)
+            text = marker.extract_file_text(path)
+            if not text.strip():
+                raise ValueError("Only typed PDF / Word / TXT marking schemes can be read. "
+                                 "For a photo or scan, paste the scheme as text.")
+            scheme = marker.parse_scheme_simple(text)
         elif pasted:
             scheme = marker.parse_scheme_simple(pasted)
         else:
@@ -228,7 +233,7 @@ def script_page(script_id):
                 st = db.load_settings()
                 engine = request.form.get("engine") or st["engine"]
                 try:
-                    result = _grade(t["scheme"], text, engine, st)
+                    result = _grade(t["scheme"], text, engine)
                     con.execute("UPDATE scripts SET result_json=?, status='marked' WHERE id=?",
                                 (json.dumps(result), script_id))
                     con.commit()
@@ -248,9 +253,9 @@ def script_page(script_id):
             con.execute("UPDATE scripts SET result_json=? WHERE id=?", (json.dumps(res), script_id))
             con.commit()
             flash(f"Marks updated: {res['total']:g} / {res['max']:g}")
-        elif action in ("reread", "read_ai", "read_own"):
+        elif action in ("reread", "read_trocr", "read_own"):
             paths = [os.path.join(db.UPLOAD_DIR, f) for f in s["files"]]
-            mode = {"read_ai": "ai", "read_own": "own"}.get(action)
+            mode = {"read_trocr": "trocr", "read_own": "own"}.get(action)
             try:
                 r = _read_into(con, script_id, paths, mode)
                 con.commit()
@@ -274,7 +279,7 @@ def mark_all(test_id):
     n, errors = 0, []
     for r in con.execute("SELECT * FROM scripts WHERE test_id=? AND status='read'", (test_id,)).fetchall():
         try:
-            res = _grade(t["scheme"], r["text"], st["engine"], st)
+            res = _grade(t["scheme"], r["text"], st["engine"])
             con.execute("UPDATE scripts SET result_json=?, status='marked' WHERE id=?", (json.dumps(res), r["id"]))
             con.commit()
             n += 1

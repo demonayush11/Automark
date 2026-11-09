@@ -61,30 +61,28 @@ def now():
     return time.time()
 
 
-ENGINE_NAMES = {"gemini": "Gemini", "groq": "Groq", "offline": "Offline"}
+ENGINE_NAMES = {"similarity": "Sentence-BERT", "keywords": "Keywords"}
+READER_MODES = ("auto", "own", "trocr")
 
 
 def load_settings():
-    """api_key = Gemini key, groq_key = Groq key, engine = gemini | groq | offline."""
-    s = {"api_key": os.environ.get("GEMINI_API_KEY", ""), "groq_key": os.environ.get("GROQ_API_KEY", ""),
-         "engine": "gemini", "reader": "auto"}
+    """engine = similarity | keywords (how answers are marked)
+    reader = auto | own | trocr     (who reads the handwriting). Everything runs locally."""
+    s = {"engine": "similarity", "reader": "auto"}
     if os.path.exists(SETTINGS_PATH):
         with open(SETTINGS_PATH, encoding="utf-8") as fh:
-            s.update({k: v for k, v in json.load(fh).items() if v != "" or k == "engine"})
-    if s["engine"] not in ENGINE_NAMES or (s["engine"] != "offline" and not key_for(s["engine"], s)):
-        s["engine"] = "groq" if s["groq_key"] else ("gemini" if s["api_key"] else "offline")
-    s["engine_name"] = ENGINE_NAMES[s["engine"]]
-    if s.get("reader") not in ("own", "auto", "ai"):
+            saved = json.load(fh)
+        s["engine"] = saved.get("engine", s["engine"])
+        s["reader"] = saved.get("reader", s["reader"])
+    if s["engine"] not in ENGINE_NAMES:          # old settings (gemini/groq/offline) -> local engine
+        s["engine"] = "keywords" if s["engine"] == "offline" else "similarity"
+    if s["reader"] not in READER_MODES:
         s["reader"] = "auto"
+    s["engine_name"] = ENGINE_NAMES[s["engine"]]
     return s
 
 
-def key_for(engine, settings):
-    return {"gemini": settings.get("api_key", ""), "groq": settings.get("groq_key", "")}.get(engine, "")
-
-
-def save_settings(api_key, groq_key, engine, reader="auto"):
+def save_settings(engine, reader):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
-        json.dump({"api_key": api_key.strip(), "groq_key": groq_key.strip(), "engine": engine,
-                   "reader": reader}, fh)
+        json.dump({"engine": engine, "reader": reader}, fh)   # old API keys are dropped

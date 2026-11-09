@@ -14,6 +14,7 @@ are run with plain NumPy, so no TensorFlow install is needed. The maths is ident
       -> 2-layer bidirectional LSTM                              (RNN: reads features left->right and right->left)
       -> 1x1 projection to 78 scores per time step               (77 characters + 1 "blank")
       -> CTC greedy decoding                                     (merge repeats, drop blanks -> text)
+      -> dictionary correction (lexicon.py)                      (pick the most likely real English word)
 
 The model reads ONE WORD image at a time. Cutting a page into words is done in segment.py.
 """
@@ -28,6 +29,7 @@ IMG_W, IMG_H = 128, 32   # model input size (width, height)
 MAX_T = 32               # time steps the RNN outputs
 BN_EPS = 1e-3            # TF1 batch_normalization default epsilon
 HIDDEN = 256
+USE_LEXICON = True       # dictionary correction after decoding (see lexicon.py)
 
 
 # ---------------------------------------------------------------- preprocessing
@@ -143,5 +145,9 @@ class HandwritingModel:
                     prev = idx
                 # confidence = lowest probability among the characters the model wrote
                 conf = float(min(char_p)) if char_p else 0.0
-                results.append(("".join(text), conf))
+                word = "".join(text)
+                if USE_LEXICON and word:
+                    from . import lexicon
+                    word = lexicon.correct(word, np.log(p + 1e-12), self.chars)
+                results.append((word, conf))
         return results

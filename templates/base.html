@@ -12,7 +12,7 @@
   <nav>
     <a href="{{ url_for('home') }}">Tests</a>
     <a href="{{ url_for('settings') }}">Settings
-      <span class="pill {{ 'warn' if settings.engine == 'offline' else 'ok' }}">{{ settings.engine_name }}</span></a>
+      <span class="pill ok">{{ settings.engine_name }}</span></a>
   </nav>
 </header>
 <main>

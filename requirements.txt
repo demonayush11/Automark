@@ -5,4 +5,7 @@ pillow>=10.0
 pypdf>=4.0
 pypdfium2>=4.0
 python-docx>=1.1
-google-genai>=1.0
+# local models (no API): TrOCR reader and Sentence-BERT marking
+torch>=2.1
+transformers>=4.40
+sentence-transformers>=3.0

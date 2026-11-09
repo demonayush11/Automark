@@ -28,16 +28,15 @@
       <textarea name="text" rows="16" class="mono">{{ s.text }}</textarea>
       <p class="hint">Words marked <code>[?]</code> were hard to read — check them against the page. Fix any wrong words; marking uses this text.
         {% if s.words %}Read {{ s.words }} words, {{ s.low_conf }} unsure.{% endif %}
-        Read by <b>{{ reader_name(s.reader) }}</b>.{% if s.reader != 'own' %} Boxes on the left show the own model's cutting; the text came from AI where marked.{% endif %}</p>
+        Read by <b>{{ reader_name(s.reader) }}</b>.{% if s.reader != 'own' %} Boxes on the left show the line and word cutting; TrOCR read whole lines.{% endif %}</p>
       <div class="row">
         <select name="engine">
-          <option value="groq" {{ 'selected' if settings.engine=='groq' }} {{ 'disabled' if not settings.groq_key }}>Mark with Groq</option>
-          <option value="gemini" {{ 'selected' if settings.engine=='gemini' }} {{ 'disabled' if not settings.api_key }}>Mark with Gemini</option>
-          <option value="offline" {{ 'selected' if settings.engine=='offline' }}>Mark offline (keywords)</option>
+          <option value="similarity" {{ 'selected' if settings.engine=='similarity' }}>Mark with Sentence-BERT</option>
+          <option value="keywords" {{ 'selected' if settings.engine=='keywords' }}>Mark with keywords</option>
         </select>
         <button class="btn primary" name="action" value="mark" onclick="this.textContent='Marking…'">{{ 'Mark again' if s.result else 'Mark' }}</button>
         <button class="btn" name="action" value="save_text">Save text</button>
-        <button class="btn" name="action" value="read_ai" formnovalidate {{ 'disabled title="Add a Groq or Gemini key in Settings"' if not ai_reader }} onclick="this.textContent='Reading…'">Read with AI</button>
+        <button class="btn" name="action" value="read_trocr" formnovalidate onclick="this.textContent='Reading… (first time downloads TrOCR)'">Read with TrOCR</button>
         <button class="btn" name="action" value="read_own" formnovalidate onclick="this.textContent='Reading…'">Read with own model</button>
       </div>
     </form>

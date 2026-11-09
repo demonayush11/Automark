@@ -3,24 +3,17 @@
 <h1>Settings</h1>
 <form method="post" class="card narrow">
   <fieldset>
-    <legend>Marking engine</legend>
-    <label class="radio"><input type="radio" name="engine" value="groq" {{ 'checked' if settings.engine == 'groq' }}> Groq — free, fast, understands meaning (model <code>{{ groq_model }}</code>)</label>
-    <label class="radio"><input type="radio" name="engine" value="gemini" {{ 'checked' if settings.engine == 'gemini' }}> Gemini — understands meaning, can also read photos of the scheme (model <code>{{ model }}</code>)</label>
-    <label class="radio"><input type="radio" name="engine" value="offline" {{ 'checked' if settings.engine == 'offline' }}> Offline — keyword matching, no internet needed</label>
+    <legend>Reading handwriting</legend>
+    <label class="radio"><input type="radio" name="reader" value="auto" {{ 'checked' if settings.reader == 'auto' }}> Own model, TrOCR if unsure (recommended) — a page where over 25% of words are unsure is read again by TrOCR</label>
+    <label class="radio"><input type="radio" name="reader" value="own" {{ 'checked' if settings.reader == 'own' }}> Own model only (CNN + LSTM + CTC)</label>
+    <label class="radio"><input type="radio" name="reader" value="trocr" {{ 'checked' if settings.reader == 'trocr' }}> TrOCR only (<code>{{ trocr_model }}</code>)</label>
   </fieldset>
   <fieldset>
-    <legend>Reading handwriting</legend>
-    <label class="radio"><input type="radio" name="reader" value="auto" {{ 'checked' if settings.reader == 'auto' }}> Own model, AI if unsure (recommended) — a page where over 25% of words are unsure is read again by AI</label>
-    <label class="radio"><input type="radio" name="reader" value="own" {{ 'checked' if settings.reader == 'own' }}> Own model only</label>
-    <label class="radio"><input type="radio" name="reader" value="ai" {{ 'checked' if settings.reader == 'ai' }}> AI only — Groq Llama 4 Scout (free) or Gemini reads every page</label>
+    <legend>Marking</legend>
+    <label class="radio"><input type="radio" name="engine" value="similarity" {{ 'checked' if settings.engine == 'similarity' }}> Sentence-BERT — compares meaning, so different wording still gets marks (<code>{{ sbert_model }}</code>)</label>
+    <label class="radio"><input type="radio" name="engine" value="keywords" {{ 'checked' if settings.engine == 'keywords' }}> Keywords — checks that the key words of each point appear</label>
   </fieldset>
-  <label>Groq API key
-    <input type="password" name="groq_key" value="{{ settings.groq_key }}" placeholder="Free key from console.groq.com/keys (starts with gsk_)" autocomplete="off">
-  </label>
-  <label>Gemini API key <span class="muted">(optional)</span>
-    <input type="password" name="api_key" value="{{ settings.api_key }}" placeholder="Key from aistudio.google.com/apikey" autocomplete="off">
-  </label>
-  <p class="hint">The AI reads the marking scheme, marks answers, and (depending on the setting above) reads handwriting the own model can't. Keys are saved on this computer in <code>data/settings.json</code>.</p>
+  <p class="hint">All models run on this computer. No API is called and no data leaves the computer. TrOCR (about 1.3 GB) and Sentence-BERT (about 90 MB) are downloaded once, the first time they are used.</p>
   <button class="btn primary">Save</button>
 </form>
 {% endblock %}
