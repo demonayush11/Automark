@@ -1,0 +1,7 @@
+Test set: SSL-HWD-Words writers never used for training or validation
+               CER %   words correct %    CTC loss
+before         46.76             27.96       2.764
+after           6.09             85.58       0.190
+
+(Classmates' data not added - skipped.)
+Best epoch: 30; best validation CER 5.84% (before: 53.99%)

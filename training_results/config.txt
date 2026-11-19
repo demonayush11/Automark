@@ -1,0 +1,16 @@
+N_TRAIN_WORDS = 100000
+N_VAL_WORDS = 10000
+N_TEST_WORDS = 10000
+MAX_PER_WRITER = 300
+MAX_LABEL_LEN = 24
+EPOCHS = 30
+BATCH_SIZE = 64
+LEARNING_RATE = 0.0001
+PATIENCE = 6
+START_FROM_APP_WEIGHTS = True
+SEED = 42
+HF_REPO = Shree10/SSL-HWD-Words
+HF_FILE = SSL-HWD-Words(Labeled).zip
+DATA_DIR = /tmp/sslhwd
+GITHUB = https://github.com/demonayush11/Automark.git
+OUT = /kaggle/working/results

@@ -1,0 +1,7 @@
+SSL-HWD-Words test writers (never trained on)
+model                      CER %   words correct %
+original app model         46.76             27.96
+after round 1               6.09             85.58
+after round 2               4.01             90.02
+
+Round 2 best epoch: 20; validation CER 5.84% -> 3.62%

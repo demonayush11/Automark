@@ -4,14 +4,22 @@ Cut an answer-sheet page into lines, then into words, in reading order.
 Steps:
   1. load        PDF pages or photos -> images
   2. clean       grayscale, remove shadows, straighten slight tilt
-  3. ink mask    dark pixels = ink; remove long ruled lines (notebook lines, margins)
-  4. lines       rows with ink are grouped into text lines (horizontal projection)
-  5. words       inside each line, ink blobs closer than a word-gap are joined into words
+  3. ink mask    dark pixels = ink; remove ruled lines (long, and short/broken thin pieces) and margins
+  4. lines       the page is cut into vertical strips; in each strip the MIDDLE parts of letters show
+                 where lines are; pieces are chained across strips, so tilted/curved lines are followed.
+                 Line spacing is measured first (repeat distance), so tails of g/y/f don't join lines.
+                 Blobs of two touching lines are cut between the lines.
+  5. words       inside each line, ink blobs closer than a word-gap are joined into words;
+                 "words" that are only specks (dust, paper texture) are dropped
 """
 import cv2
 import numpy as np
 
-TARGET_WIDTH = 1800  # pages are resized to this width so thresholds behave the same
+TARGET_WIDTH = 1800
+LINE_H_FACTOR = 1.0
+GAP_FLOOR = 0.12
+LINE_H_MIN = 1.6
+TALL_CUT = 2.6
 
 
 # ---------------------------------------------------------------- 1. load
@@ -33,22 +41,12 @@ def load_pages(path):
 
 
 # ---------------------------------------------------------------- 2. clean
-def noise_level(gray):
-    """Estimated grain/noise strength: spread of (image - its 3x3 median), robust to edges."""
-    d = gray.astype(np.float32) - cv2.medianBlur(gray, 3).astype(np.float32)
-    return 1.4826 * float(np.median(np.abs(d - np.median(d))))
-
-
 def clean_page(bgr):
-    """Grayscale page with even white background (removes phone-photo shadows and grain).
-    Returns (gray_page, tilt_angle_in_degrees_that_was_corrected)."""
+    """Grayscale page with even white background (removes phone-photo shadows)."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     scale = TARGET_WIDTH / gray.shape[1]
     gray = cv2.resize(gray, None, fx=scale, fy=scale,
                       interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
-    sigma = noise_level(gray)
-    if sigma > 2.5:   # grainy photo (dark room, cheap camera): non-local-means denoising
-        gray = cv2.fastNlMeansDenoising(gray, None, h=1.5 * sigma, templateWindowSize=7, searchWindowSize=21)
     background = cv2.medianBlur(cv2.dilate(gray, np.ones((7, 7), np.uint8)), 51)
     norm = cv2.divide(gray, background, scale=255)
     return _deskew(norm)
@@ -61,29 +59,22 @@ def _ink_mask(gray):
     return mask
 
 
-def _deskew(gray, max_angle=15.0):
-    """Straighten a tilted page: try rotations, keep the one where text rows are sharpest
-    (rows of the page alternate clearly between full of ink and empty).
-    Coarse search every 1 degree up to +-15, then fine search every 0.1 degree around the best.
-    Returns (straightened_page, angle). An angle near the +-15 limit means the page may be tilted more."""
+def _deskew(gray, max_angle=5.0):
+    """Try small rotations; keep the one where text rows are sharpest."""
     small = cv2.resize(_ink_mask(gray), None, fx=0.25, fy=0.25)
+    best, best_score = 0.0, -1
     h, w = small.shape
-    if not small.any():                       # no ink at all: nothing to straighten
-        return gray, 0.0
-
-    def score(angle):
+    for angle in np.arange(-max_angle, max_angle + 0.01, 0.5):
         m = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1)
-        return np.var(cv2.warpAffine(small, m, (w, h)).sum(axis=1))
-
-    best = max(np.arange(-max_angle, max_angle + 0.01, 1.0), key=score)
-    fine = np.arange(best - 1.0, best + 1.01, 0.1)
-    best = max(fine[np.abs(fine) <= max_angle + 1e-9], key=score)     # stay within the search limit
-    best = float(round(best, 1))
-    if abs(best) < 0.1:
-        return gray, 0.0
+        rot = cv2.warpAffine(small, m, (w, h))
+        score = np.var(rot.sum(axis=1))
+        if score > best_score:
+            best, best_score = angle, score
+    if abs(best) < 0.25:
+        return gray
     h, w = gray.shape
     m = cv2.getRotationMatrix2D((w / 2, h / 2), best, 1)
-    return cv2.warpAffine(gray, m, (w, h), borderValue=255), best
+    return cv2.warpAffine(gray, m, (w, h), borderValue=255)
 
 
 # ---------------------------------------------------------------- 3. ink mask without ruled lines
@@ -92,6 +83,12 @@ def ink_without_rules(gray):
     h, w = mask.shape
     horiz = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(w // 4, 400), 1)))
     vert = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(h // 3, 450))))
+    # shorter pieces of ruled lines (broken under the writing, faint, or curved in a photo):
+    # long, very thin horizontal runs. Letters are thicker, so they are not touched.
+    short = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(w // 12, 120), 1)))
+    thick = cv2.morphologyEx(short, cv2.MORPH_OPEN, np.ones((7, 1), np.uint8))   # parts thicker than 6 px = ink
+    short = cv2.subtract(short, cv2.dilate(thick, np.ones((3, 25), np.uint8)))
+    horiz = horiz | short
     rules = cv2.dilate(horiz | vert, np.ones((3, 3), np.uint8))
     no_rules = cv2.subtract(mask, rules)
     # letters that cross a ruled line got cut in two: re-join them vertically, only inside the rule zone
@@ -188,7 +185,7 @@ def find_lines(mask, letter_h=None):
 def _gap_threshold(gaps, line_h):
     """Decide which blank gaps separate words (big) and which separate letters (small).
     1-D Otsu split of the gap widths, with a sensible minimum."""
-    floor = 0.12 * line_h
+    floor = GAP_FLOOR * line_h
     if len(gaps) == 0:
         return np.inf
     # cap very wide gaps so one far-away blob can't pull the threshold up
@@ -228,51 +225,226 @@ def split_words(comps, line_h):
     return [tuple(w) for w in words]
 
 
+def _line_pitch(stats, cents, keep, letter_h, height):
+    """Distance between written lines, from the repeat distance of the ink-core profile."""
+    core = max(2, int(0.3 * letter_h))
+    prof = np.zeros(height, float)
+    for i in keep:
+        cy = int(cents[i][1])
+        prof[max(0, cy - core): cy + core + 1] += stats[i][2]
+    prof = prof - prof.mean()
+    ac = np.correlate(prof, prof, mode="full")[height - 1:]
+    lo, hi = int(1.3 * letter_h), min(height - 1, int(6 * letter_h))
+    if hi <= lo + 2:
+        return 2.5 * letter_h
+    seg = ac[lo:hi]
+    peaks = [k for k in range(1, len(seg) - 1) if seg[k] >= seg[k - 1] and seg[k] >= seg[k + 1]]
+    if not peaks:
+        return float(lo + np.argmax(seg))
+    top = max(seg[k] for k in peaks)
+    first = next(k for k in peaks if seg[k] >= 0.5 * top)     # first clear repeat, not a multiple of it
+    return float(lo + first)
+
+
+def _bands_1d(prof, letter_h, pitch):
+    """Row ranges where the profile has ink cores; too-tall ranges split at their emptiest rows;
+    pieces closer than about half a line are one line."""
+    if prof.max() == 0:
+        return []
+    on = prof > 0.15 * np.percentile(prof[prof > 0], 90)
+    bands, start = [], None
+    for y, v in enumerate(on):
+        if v and start is None:
+            start = y
+        elif not v and start is not None:
+            bands.append([start, y]); start = None
+    if start is not None:
+        bands.append([start, len(prof)])
+    out = []
+    for a, b in bands:
+        stack = [(a, b)]
+        while stack:
+            a2, b2 = stack.pop()
+            if b2 - a2 > 1.3 * pitch:
+                lo, hi = a2 + int(0.4 * pitch), b2 - int(0.4 * pitch)
+                cut = lo + int(np.argmin(prof[lo:hi]))
+                stack += [(cut, b2), (a2, cut)]
+            else:
+                out.append((a2, b2))
+    out.sort()
+    merged = []
+    for a, b in out:
+        if merged and (a + b) / 2 - (merged[-1][0] + merged[-1][1]) / 2 < 0.55 * pitch:
+            merged[-1] = (merged[-1][0], b)
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def _find_text_lines(stats, cents, keep, letter_h, height, width, pitch):
+    """Find text lines that may be tilted or curved (phone photos, sloping writing).
+    The page is cut into vertical strips; in each strip, rows holding the MIDDLE part of letters
+    form short line pieces; pieces in neighbouring strips at about the same height are chained.
+    Returns a list of lines, each a function-like pair (xs, ys) of its centre height across the page."""
+    core = max(2, int(0.3 * letter_h))
+    n_strips = int(np.clip(width / (7 * letter_h), 3, 10))
+    edges = np.linspace(0, width, n_strips + 1)
+    xs_mid = (edges[:-1] + edges[1:]) / 2
+    pieces = []                                   # per strip: list of centre heights
+    for s in range(n_strips):
+        prof = np.zeros(height, float)
+        for i in keep:
+            if edges[s] <= cents[i][0] < edges[s + 1]:
+                cy = int(cents[i][1])
+                prof[max(0, cy - core): cy + core + 1] += stats[i][2]
+        prof = np.convolve(prof, np.ones(5) / 5, mode="same")
+        pieces.append([(a + b) / 2 for a, b in _bands_1d(prof, letter_h, pitch)])
+    lines = []                                    # each: {"x": [...], "y": [...]}
+    for s in range(n_strips):
+        taken = set()
+        cands = []
+        for c in pieces[s]:
+            for k, ln in enumerate(lines):
+                gap = s - ln["s"][-1]
+                if gap < 1 or gap > 3:
+                    continue
+                slope = ln["slope"]
+                pred = ln["y"][-1] + slope * (xs_mid[s] - ln["x"][-1])
+                d = abs(c - pred)
+                if d < 0.35 * pitch:
+                    cands.append((d, c, k))
+        cands.sort()
+        used_c = set()
+        for d, c, k in cands:
+            if c in used_c or k in taken:
+                continue
+            ln = lines[k]
+            new_slope = (c - ln["y"][-1]) / (xs_mid[s] - ln["x"][-1])
+            ln["slope"] = 0.5 * ln["slope"] + 0.5 * new_slope if len(ln["x"]) > 1 else new_slope
+            ln["x"].append(xs_mid[s]); ln["y"].append(c); ln["s"].append(s)
+            taken.add(k); used_c.add(c)
+        for c in pieces[s]:
+            if c not in used_c:
+                lines.append({"x": [xs_mid[s]], "y": [c], "s": [s], "slope": 0.0})
+    # join pieces of the same line that were not chained (blank stretch, big gap between words)
+    changed = True
+    while changed:
+        changed = False
+        best = None
+        for a, A in enumerate(lines):
+            for b, B in enumerate(lines):
+                if a == b or A["s"][-1] >= B["s"][0]:
+                    continue
+                d = max(abs(_line_y(A, B["x"][0]) - B["y"][0]), abs(_line_y(B, A["x"][-1]) - A["y"][-1]))
+                if d < 0.3 * pitch and (best is None or d < best[0]):
+                    best = (d, a, b)
+        if best:
+            _, a, b = best
+            A, B = lines[a], lines[b]
+            A["x"] += B["x"]; A["y"] += B["y"]; A["s"] += B["s"]
+            del lines[b]
+            changed = True
+    return lines
+
+
+def _line_y(ln, x):
+    """Centre height of a line at position x (straight continuation beyond its ends)."""
+    xs, ys = ln["x"], ln["y"]
+    if len(xs) == 1:
+        return ys[0]
+    if x <= xs[0]:
+        return ys[0] + (ys[1] - ys[0]) / (xs[1] - xs[0]) * (x - xs[0])
+    if x >= xs[-1]:
+        return ys[-1] + (ys[-1] - ys[-2]) / (xs[-1] - xs[-2]) * (x - xs[-1])
+    return float(np.interp(x, xs, ys))
+
+
 def segment_page(bgr):
     """Full pipeline for one page.
-    Returns (gray_page, lines, info):
-      lines = [[{"box": (x0,y0,x1,y1), "img": crop}, ...], ...]   (one list of words per text line)
-      info  = {"angle": tilt in degrees that was corrected}"""
-    gray, angle = clean_page(bgr)
-    info = {"angle": angle}
+    Returns (gray_page, lines) where lines = [[{"box": (x0,y0,x1,y1), "img": crop}, ...], ...]."""
+    gray = clean_page(bgr)
     mask, rules = ink_without_rules(gray)
     clean = gray.copy()
     clean[rules > 0] = 255                     # erase ruled lines from what the model sees
 
     mask = remove_non_text(mask)
     n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
-    letter_h = _letter_height(stats) if n > 1 else None
-    bands = find_lines(mask, letter_h)
-    if not bands:
-        return gray, [], info
-    typical = float(np.median([b - a for a, b in bands]))
-    min_area = max(12, int(0.004 * typical * typical))
+    if n <= 1:
+        return gray, []
+    letter_h = _letter_height(stats)
+    min_area = max(12, int(0.005 * letter_h * letter_h))
+    H, W = mask.shape
 
-    # give every ink blob (letter / joined letters) to the text line its centre falls in
-    per_line = [[] for _ in bands]
-    for i in range(1, n):
+    def usable(i):
         x, y, w, h, area = stats[i]
         if area < min_area:
-            continue
-        cy = cents[i][1]
-        dist = [0 if a <= cy <= b else min(abs(cy - a), abs(cy - b)) for a, b in bands]
-        j = int(np.argmin(dist))
-        if dist[j] <= 0.6 * typical:
-            per_line[j].append((x, y, x + w, y + h, {i}))
+            return False
+        if h < 0.35 * letter_h and w > 1.5 * letter_h and w > 5 * h:   # thin stroke left from a ruled line
+            return False
+        if w < 0.25 * letter_h and h > 2.2 * letter_h:     # piece of a vertical margin line
+            return False
+        return True
 
+    keep = [i for i in range(1, n) if usable(i) and stats[i][3] < 3 * letter_h]
+    pitch = _line_pitch(stats, cents, keep, letter_h, H)
+    lines = _find_text_lines(stats, cents, keep, letter_h, H, W, pitch)
+    if not lines:
+        return gray, []
+
+    def nearest_line(cx, cy):
+        d = [abs(cy - _line_y(ln, cx)) for ln in lines]
+        j = int(np.argmin(d))
+        return j, d[j]
+
+    # a blob taller than ~2 lines (letters of two lines touching): cut it between the lines
+    tall = [i for i in range(1, n) if usable(i) and stats[i][3] >= TALL_CUT * letter_h]
+    for i in tall:
+        x, y, w, h, _ = stats[i]
+        cx = x + w / 2
+        ys = sorted(_line_y(ln, cx) for ln in lines)
+        for a, b in zip(ys, ys[1:]):
+            c = int((a + b) / 2)
+            if b - a > 0.5 * pitch and y + 0.25 * letter_h < c < y + h - 0.25 * letter_h:
+                sub = labels[c - 1:c + 2, x:x + w] == i
+                mask[c - 1:c + 2, x:x + w][sub] = 0
+    if tall:
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
+
+    # give every blob to the line passing nearest to the blob's centre.
+    big_area = max(12, int(0.02 * letter_h * letter_h))
+    per_line = [[] for _ in lines]
+    small_line = [[] for _ in lines]
+    for i in range(1, n):
+        if not usable(i) or stats[i][3] > 4 * letter_h:
+            continue
+        x, y, w, h, area = stats[i]
+        j, d = nearest_line(cents[i][0], cents[i][1])
+        if d <= 0.8 * pitch:
+            per_line[j].append((x, y, x + w, y + h, {i}))
+    # reading order: top to bottom, by each line's height at the middle of the page
+    order = sorted(range(len(lines)), key=lambda k: _line_y(lines[k], W / 2))
+    per_line = [per_line[k] for k in order]
+    small_line = [small_line[k] for k in order]
+    centres = sorted(_line_y(ln, W / 2) for ln in lines)
+
+    # height of a written line, for the word-gap rule: from the distance between line centres
     out = []
     for j, comps in enumerate(per_line):
         if not comps:
             continue
         ink = sum(int(stats[i][4]) for c in comps for i in c[4])
-        if letter_h and ink < 0.15 * letter_h * letter_h and max(c[3] - c[1] for c in comps) < 0.5 * letter_h:
+        if ink < 0.15 * letter_h * letter_h and max(c[3] - c[1] for c in comps) < 0.5 * letter_h:
             continue                     # only dots/specks on this "line" (i-dots, dust): not text
-        line_h = bands[j][1] - bands[j][0]
+        # height of this line's writing (tall letters), for the word-gap rule
+        line_h = max(LINE_H_FACTOR * float(np.percentile([c[3] - c[1] for c in comps], 80)), LINE_H_MIN * letter_h)
+        # a "word" made only of specks (paper texture, dust, a stray dot) is not a word
+        groups = [g for g in split_words(comps, line_h)
+                  if sum(int(stats[i][4]) for i in g[4]) >= big_area]
         words = []
-        for x0, y0, x1, y1, ids in split_words(comps, line_h):
+        for x0, y0, x1, y1, ids in groups:
             p = 4
-            X0, X1 = max(0, x0 - p), min(gray.shape[1], x1 + p)
-            Y0, Y1 = max(0, y0 - p), min(gray.shape[0], y1 + p)
+            X0, X1 = max(0, x0 - p), min(W, x1 + p)
+            Y0, Y1 = max(0, y0 - p), min(H, y1 + p)
             crop = clean[Y0:Y1, X0:X1].copy()
             # keep only this word's ink (+ a thin halo); blank out paper and other lines' strokes
             mine = np.isin(labels[Y0:Y1, X0:X1], list(ids)).astype(np.uint8)
@@ -280,7 +452,7 @@ def segment_page(bgr):
             crop[mine == 0] = 255
             words.append({"box": (int(X0), int(Y0), int(X1), int(Y1)), "img": crop})
         out.append(words)
-    return gray, out, info
+    return gray, out
 
 
 def draw_boxes(gray, lines, texts=None):

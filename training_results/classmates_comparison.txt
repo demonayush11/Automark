@@ -1,0 +1,26 @@
+All models on our classmates' handwriting
+(2,921 word images from 6 students; never used for training; word crops cut by the app)
+
+                          CER %   words correct %
+original (IAM only)       25.0        39.7
+after round 1             23.6        42.0
+after round 2             22.4        44.3
+full dataset (final)      20.3        48.9
+
+Per student (CER % / words correct %):
+student   original       round 2        full dataset
+aditya    25.9 / 39.8    23.1 / 44.9    21.9 / 47.3
+aniket    30.9 / 32.9    28.1 / 43.5    26.9 / 48.2
+anurag    18.6 / 48.9    18.5 / 51.4    16.3 / 56.4
+ayush     33.2 / 29.5    33.6 / 32.6    32.1 / 35.1
+pranav    16.5 / 47.6    12.4 / 52.6    10.2 / 60.0
+yash      31.2 / 32.0    24.1 / 39.1    20.7 / 44.5
+
+Note: about 85% of these word labels were checked as correct (labels made automatically from
+typed transcriptions), so the absolute error rates are somewhat too high for every model.
+The comparison between models is fair: all were measured on the same words.
+
+Sample sheet (IAM page, known text), full page read by the app - CER / WER:
+                     original        round 2         full dataset
+scan                 4.8% / 19.2%    8.1% / 25.6%    5.8% / 20.5%
+phone-style photo    9.4% / 34.6%    12.2% / 38.5%   9.9% / 30.8%

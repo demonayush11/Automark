@@ -3,19 +3,24 @@
 <h1>Settings</h1>
 <form method="post" class="card narrow">
   <fieldset>
-    <legend>Marking</legend>
-    <label class="radio"><input type="radio" name="engine" value="similarity" {{ 'checked' if settings.engine == 'similarity' }}> Sentence-BERT — compares meaning, so different wording still gets marks (<code>{{ sbert_model }}</code>)</label>
-    <label class="radio"><input type="radio" name="engine" value="keywords" {{ 'checked' if settings.engine == 'keywords' }}> Keywords — checks that the key words of each point appear</label>
+    <legend>Marking engine</legend>
+    <label class="radio"><input type="radio" name="engine" value="groq" {{ 'checked' if settings.engine == 'groq' }}> Groq — free, fast, understands meaning (model <code>{{ groq_model }}</code>)</label>
+    <label class="radio"><input type="radio" name="engine" value="gemini" {{ 'checked' if settings.engine == 'gemini' }}> Gemini — understands meaning, can also read photos of the scheme (model <code>{{ model }}</code>)</label>
+    <label class="radio"><input type="radio" name="engine" value="offline" {{ 'checked' if settings.engine == 'offline' }}> Offline — keyword matching, no internet needed</label>
   </fieldset>
-  <p class="hint">Handwriting is read by our own model (CNN + BiLSTM + CTC with dictionary correction). If a photo is too hard to read, the app asks for a clearer photo instead of guessing.</p>
-  <p class="hint">All models run on this computer. No API is called and no data leaves the computer. Sentence-BERT (about 90 MB) is downloaded once, the first time it is used.</p>
+  <fieldset>
+    <legend>Reading handwriting</legend>
+    <label class="radio"><input type="radio" name="reader" value="auto" {{ 'checked' if settings.reader == 'auto' }}> Own model, AI if unsure (recommended) — a page where over 25% of words are unsure is read again by AI</label>
+    <label class="radio"><input type="radio" name="reader" value="own" {{ 'checked' if settings.reader == 'own' }}> Own model only</label>
+    <label class="radio"><input type="radio" name="reader" value="ai" {{ 'checked' if settings.reader == 'ai' }}> AI only — Groq Llama 4 Scout (free) or Gemini reads every page</label>
+  </fieldset>
+  <label>Groq API key
+    <input type="password" name="groq_key" value="{{ settings.groq_key }}" placeholder="Free key from console.groq.com/keys (starts with gsk_)" autocomplete="off">
+  </label>
+  <label>Gemini API key <span class="muted">(optional)</span>
+    <input type="password" name="api_key" value="{{ settings.api_key }}" placeholder="Key from aistudio.google.com/apikey" autocomplete="off">
+  </label>
+  <p class="hint">The AI reads the marking scheme, marks answers, and (depending on the setting above) reads handwriting the own model can't. Keys are saved on this computer in <code>data/settings.json</code>.</p>
   <button class="btn primary">Save</button>
 </form>
-
-<div class="card narrow">
-  <h3>Training data for fine-tuning</h3>
-  <p>{{ training.words }} words from {{ training.students }} student(s) saved.</p>
-  <p class="hint">On a student's page, correct the text, then click <b>Save as training data</b>. Download this zip and use it with <code>finetune.py</code> on Google Colab (see README).</p>
-  {% if training.words %}<a class="btn" href="{{ url_for('training_zip') }}">Download training_data.zip</a>{% endif %}
-</div>
 {% endblock %}

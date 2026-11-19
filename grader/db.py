@@ -41,12 +41,9 @@ def connect():
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(scripts)")}
-    # upgrade databases made by earlier versions
-    if "quality" not in cols:        # photo quality check: ok | warn | bad
-        con.execute("ALTER TABLE scripts ADD COLUMN quality TEXT NOT NULL DEFAULT 'ok'")
-    if "quality_reasons_json" not in cols:
-        con.execute("ALTER TABLE scripts ADD COLUMN quality_reasons_json TEXT NOT NULL DEFAULT '[]'")
-    con.commit()
+    if "reader" not in cols:                       # upgrade databases made by the first version
+        con.execute("ALTER TABLE scripts ADD COLUMN reader TEXT NOT NULL DEFAULT 'own'")
+        con.commit()
     return con
 
 
@@ -54,7 +51,7 @@ def row_to_dict(row):
     if row is None:
         return None
     d = dict(row)
-    for key in ("scheme_json", "files_json", "previews_json", "result_json", "quality_reasons_json"):
+    for key in ("scheme_json", "files_json", "previews_json", "result_json"):
         if key in d:
             d[key[:-5]] = json.loads(d[key]) if d[key] else None
     return d
@@ -64,22 +61,30 @@ def now():
     return time.time()
 
 
-ENGINE_NAMES = {"similarity": "Sentence-BERT", "keywords": "Keywords"}
+ENGINE_NAMES = {"gemini": "Gemini", "groq": "Groq", "offline": "Offline"}
 
 
 def load_settings():
-    """engine = similarity | keywords (how answers are marked). Everything runs locally."""
-    s = {"engine": "similarity"}
+    """api_key = Gemini key, groq_key = Groq key, engine = gemini | groq | offline."""
+    s = {"api_key": os.environ.get("GEMINI_API_KEY", ""), "groq_key": os.environ.get("GROQ_API_KEY", ""),
+         "engine": "gemini", "reader": "auto"}
     if os.path.exists(SETTINGS_PATH):
         with open(SETTINGS_PATH, encoding="utf-8") as fh:
-            s["engine"] = json.load(fh).get("engine", s["engine"])
-    if s["engine"] not in ENGINE_NAMES:          # old settings (gemini/groq/offline) -> local engine
-        s["engine"] = "keywords" if s["engine"] == "offline" else "similarity"
+            s.update({k: v for k, v in json.load(fh).items() if v != "" or k == "engine"})
+    if s["engine"] not in ENGINE_NAMES or (s["engine"] != "offline" and not key_for(s["engine"], s)):
+        s["engine"] = "groq" if s["groq_key"] else ("gemini" if s["api_key"] else "offline")
     s["engine_name"] = ENGINE_NAMES[s["engine"]]
+    if s.get("reader") not in ("own", "auto", "ai"):
+        s["reader"] = "auto"
     return s
 
 
-def save_settings(engine):
+def key_for(engine, settings):
+    return {"gemini": settings.get("api_key", ""), "groq": settings.get("groq_key", "")}.get(engine, "")
+
+
+def save_settings(api_key, groq_key, engine, reader="auto"):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
-        json.dump({"engine": engine}, fh)     # older keys (API keys, reader mode) are dropped
+        json.dump({"api_key": api_key.strip(), "groq_key": groq_key.strip(), "engine": engine,
+                   "reader": reader}, fh)

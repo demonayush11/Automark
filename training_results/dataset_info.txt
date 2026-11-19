@@ -1,0 +1,8 @@
+Dataset: Shree10/SSL-HWD-Words / SSL-HWD-Words(Labeled).zip
+Label files in zip: 835; images in zip: 2089926
+train: 100,000 words from  467 writers
+val  :  10,000 words from   44 writers
+test :  10,000 words from   43 writers
+Rows skipped (image missing/unreadable): 1
+Labels kept only if 1-24 characters, all among the model's 77 characters
+Writers never overlap between train, val and test.

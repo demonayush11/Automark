@@ -1,0 +1,7 @@
+Test set: SSL-HWD-Words writers never used for training or validation (same as rounds 1 and 2)
+model                            CER %   words correct %    CTC loss
+start model                       4.01             90.02       0.114
+after full-dataset training       2.13             94.35       0.065
+
+Training words: 1,752,472 from 748 writers
+Epochs run: 12; best epoch 11; validation CER 3.62% -> 1.87%

@@ -4,14 +4,12 @@ AutoMark - teacher web app.
 Run:  python app.py      then open  http://127.0.0.1:5000
 
 Flow: New test -> upload marking scheme -> check scheme -> upload student scripts
-      -> own model reads handwriting -> photo quality check (re-upload if unreadable) -> teacher fixes text
-      -> Sentence-BERT (or keywords) marks -> results / CSV.   Everything runs locally, no API.
+      -> own model reads handwriting -> teacher fixes text -> Gemini (or offline) marks -> results / CSV
 """
 import csv
 import io
 import json
 import os
-import re
 import uuid
 
 from flask import (Flask, Response, abort, flash, redirect, render_template, request,
@@ -19,7 +17,7 @@ from flask import (Flask, Response, abort, flash, redirect, render_template, req
 from werkzeug.utils import secure_filename
 
 from grader import db, marker
-from grader.reader import read_script
+from grader.reader import read_script, scheme_words
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "automark-local")
@@ -56,44 +54,40 @@ def _get_script(con, script_id):
     return s
 
 
-def _grade(scheme, text, engine):
-    if engine == "similarity":
-        return marker.grade_similarity(scheme, text)
-    return marker.grade_keywords(scheme, text)
+def _grade(scheme, text, engine, settings):
+    if engine == "gemini":
+        return marker.grade_with_gemini(scheme, text, settings["api_key"])
+    if engine == "groq":
+        return marker.grade_with_groq(scheme, text, settings["groq_key"])
+    return marker.grade_offline(scheme, text)
 
 
-def _add_scheme_words(con, script_id):
-    """Give the dictionary correction the subject words of this test's marking scheme."""
-    from grader import lexicon
-    row = con.execute("SELECT t.scheme_json FROM scripts s JOIN tests t ON t.id = s.test_id WHERE s.id=?",
-                      (script_id,)).fetchone()
-    if row:
-        scheme = json.loads(row[0])
-        text = " ".join(q.get("question", "") + " " + " ".join(p["text"] for p in q.get("points", []))
-                        for q in scheme.get("questions", []))
-        lexicon.add_words(re.findall(r"[A-Za-z]+(?:['-][A-Za-z]+)*", text))
-
-
-def _read_into(con, script_id, paths):
-    """Read a script with our own model, run the photo quality check, store both."""
-    _add_scheme_words(con, script_id)
+def _read_into(con, script_id, paths, mode=None):
+    st = db.load_settings()
     prefix = os.path.join(db.UPLOAD_DIR, f"preview_{script_id}_{uuid.uuid4().hex[:6]}")
-    r = read_script(paths, preview_prefix=prefix)
+    row = con.execute("SELECT t.scheme_json FROM scripts s JOIN tests t ON s.test_id=t.id WHERE s.id=?",
+                      (script_id,)).fetchone()
+    extra = scheme_words(json.loads(row[0])) if row and row[0] else None
+    r = read_script(paths, preview_prefix=prefix, mode=mode or st["reader"], settings=st, extra_words=extra)
     previews = [os.path.basename(p["preview"]) for p in r["pages"] if p["preview"]]
-    con.execute("UPDATE scripts SET text=?, words=?, low_conf=?, previews_json=?, quality=?, "
-                "quality_reasons_json=?, status='read', result_json=NULL WHERE id=?",
-                (r["text"], r["words"], r["low_conf"], json.dumps(previews), r["quality"],
-                 json.dumps(r["reasons"]), script_id))
+    con.execute("UPDATE scripts SET text=?, words=?, low_conf=?, previews_json=?, reader=?, status='read', "
+                "result_json=NULL WHERE id=?",
+                (r["text"], r["words"], r["low_conf"], json.dumps(previews), r["reader"], script_id))
+    if r["ai_problems"]:
+        flash("AI reading failed, kept own-model text. " + "; ".join(r["ai_problems"])[:400], "error")
     return r
 
 
-QUALITY_LABEL = {"ok": "OK", "warn": "Check", "bad": "Re-upload"}
+def _reader_name(code):
+    names = {"own": "own model", "ai:groq": "AI (Groq)", "ai:gemini": "AI (Gemini)"}
+    return " + ".join(names.get(c, c) for c in (code or "own").split("+"))
 
 
 @app.context_processor
 def _inject():
-    from grader.reader import RETAKE_TIPS
-    return {"settings": db.load_settings(), "quality_label": QUALITY_LABEL, "retake_tips": RETAKE_TIPS}
+    st = db.load_settings()
+    from grader.ai_reader import pick_engine
+    return {"settings": st, "reader_name": _reader_name, "ai_reader": pick_engine(st)}
 
 
 # ---------------------------------------------------------------- pages
@@ -110,18 +104,11 @@ def home():
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     if request.method == "POST":
-        db.save_settings(request.form.get("engine", "similarity"))
+        db.save_settings(request.form.get("api_key", ""), request.form.get("groq_key", ""),
+                         request.form.get("engine", "groq"), request.form.get("reader", "auto"))
         flash("Settings saved.")
         return redirect(url_for("home"))
-    from grader import training_data
-    return render_template("settings.html", sbert_model=marker.SBERT_MODEL, training=training_data.stats())
-
-
-@app.route("/training_data.zip")
-def training_zip():
-    from grader import training_data
-    return Response(training_data.zip_bytes(), mimetype="application/zip",
-                    headers={"Content-Disposition": "attachment; filename=training_data.zip"})
+    return render_template("settings.html", model=marker.GEMINI_MODEL, groq_model=marker.GROQ_MODEL)
 
 
 @app.route("/test/new", methods=["GET", "POST"])
@@ -131,14 +118,20 @@ def new_test():
     name = request.form.get("name", "").strip() or "Untitled test"
     pasted = request.form.get("scheme_text", "").strip()
     f = request.files.get("scheme_file")
+    s = db.load_settings()
     try:
         if f and f.filename:
             path = _save_upload(f, SCHEME_EXT)
-            text = marker.extract_file_text(path)
-            if not text.strip():
-                raise ValueError("Only typed PDF / Word / TXT marking schemes can be read. "
-                                 "For a photo or scan, paste the scheme as text.")
-            scheme = marker.parse_scheme_simple(text)
+            if s["engine"] == "gemini":
+                scheme = marker.parse_scheme_with_gemini(path, s["api_key"])
+            elif s["engine"] == "groq":
+                scheme = marker.parse_scheme_with_groq(path, s["groq_key"])
+            else:
+                text = marker.extract_file_text(path)
+                if not text.strip():
+                    raise ValueError("Offline mode can only read typed PDF / Word / TXT schemes. "
+                                     "Add a Gemini key in Settings, or paste the scheme as text.")
+                scheme = marker.parse_scheme_simple(text)
         elif pasted:
             scheme = marker.parse_scheme_simple(pasted)
         else:
@@ -203,24 +196,19 @@ def upload_scripts(test_id):
         flash(str(e), "error")
         return redirect(url_for("test_page", test_id=test_id))
 
-    done, failed, needs = 0, [], []
+    done, failed = 0, []
     for student, roll, paths in groups:
         cur = con.execute("INSERT INTO scripts(test_id, student, roll, files_json, created) VALUES (?,?,?,?,?)",
                           (test_id, student, roll, json.dumps([os.path.basename(p) for p in paths]), db.now()))
         try:
-            r = _read_into(con, cur.lastrowid, paths)
+            _read_into(con, cur.lastrowid, paths)
             done += 1
-            if r["quality"] == "bad":
-                needs.append(student)
         except Exception as e:  # noqa: BLE001
             con.execute("UPDATE scripts SET status='error', text=? WHERE id=?", (f"Reading failed: {e}", cur.lastrowid))
             failed.append(student)
         con.commit()
     flash(f"Read {done} script(s)." + (f" Failed: {', '.join(failed)}" if failed else ""),
           "error" if failed else "info")
-    if needs:
-        flash(f"{len(needs)} photo(s) could not be read reliably and should be re-uploaded: {', '.join(needs)}.",
-              "error")
     if mode == "one" and done == 1:
         return redirect(url_for("script_page", script_id=cur.lastrowid))
     return redirect(url_for("test_page", test_id=test_id))
@@ -233,23 +221,17 @@ def script_page(script_id):
     t = _get_test(con, s["test_id"])
     if request.method == "POST":
         action = request.form.get("action")
-        force = action == "mark_force"            # "Mark anyway" (teacher confirmed in the browser)
-        if force:
-            action = "mark"
         if action in ("save_text", "mark"):
             text = request.form.get("text", "")
             con.execute("UPDATE scripts SET text=?, student=?, roll=? WHERE id=?",
                         (text, request.form.get("student", s["student"]), request.form.get("roll", s["roll"]),
                          script_id))
             con.commit()
-            if action == "mark" and s["quality"] == "bad" and not force:
-                flash("This photo could not be read reliably. Re-upload a clearer photo, "
-                      "or use 'Mark anyway'.", "error")
-            elif action == "mark":
+            if action == "mark":
                 st = db.load_settings()
                 engine = request.form.get("engine") or st["engine"]
                 try:
-                    result = _grade(t["scheme"], text, engine)
+                    result = _grade(t["scheme"], text, engine, st)
                     con.execute("UPDATE scripts SET result_json=?, status='marked' WHERE id=?",
                                 (json.dumps(result), script_id))
                     con.commit()
@@ -269,23 +251,13 @@ def script_page(script_id):
             con.execute("UPDATE scripts SET result_json=? WHERE id=?", (json.dumps(res), script_id))
             con.commit()
             flash(f"Marks updated: {res['total']:g} / {res['max']:g}")
-        elif action == "save_training":
-            # save the teacher's corrected text first, then store word images + correct spelling
-            text = request.form.get("text", s["text"])
-            con.execute("UPDATE scripts SET text=? WHERE id=?", (text, script_id))
-            con.commit()
-            from grader import training_data
-            from grader.reader import get_model
-            _add_scheme_words(con, script_id)
-            saved, skipped = training_data.export_script(dict(s, text=text), get_model().chars)
-            flash(f"Saved {saved} words as training data ({skipped} skipped: unchecked [?] words "
-                  f"or lines that could not be matched). Total now: {training_data.stats()['words']} words.")
-        elif action == "reread":
+        elif action in ("reread", "read_ai", "read_own"):
             paths = [os.path.join(db.UPLOAD_DIR, f) for f in s["files"]]
+            mode = {"read_ai": "ai", "read_own": "own"}.get(action)
             try:
-                _read_into(con, script_id, paths)
+                r = _read_into(con, script_id, paths, mode)
                 con.commit()
-                flash("Handwriting read again.")
+                flash("Read again by " + _reader_name(r["reader"]) + ".")
             except Exception as e:  # noqa: BLE001
                 flash(f"Reading failed: {e}", "error")
         return redirect(url_for("script_page", script_id=script_id))
@@ -297,48 +269,15 @@ def script_page(script_id):
     return render_template("script.html", s=s, t=t, nav=nav)
 
 
-@app.route("/script/<int:script_id>/reupload", methods=["POST"])
-def reupload_script(script_id):
-    """Replace all pages of one student's script with new files, then read them again."""
-    con = db.connect()
-    s = _get_script(con, script_id)
-    files = [f for f in request.files.getlist("files") if f and f.filename]
-    if not files:
-        flash("Choose the new photo(s) or PDF first.", "error")
-        return redirect(url_for("script_page", script_id=script_id))
-    try:
-        paths = [_save_upload(f, SCRIPT_EXT) for f in sorted(files, key=lambda f: f.filename)]
-    except ValueError as e:
-        flash(str(e), "error")
-        return redirect(url_for("script_page", script_id=script_id))
-    con.execute("UPDATE scripts SET files_json=? WHERE id=?",
-                (json.dumps([os.path.basename(p) for p in paths]), script_id))
-    try:
-        r = _read_into(con, script_id, paths)
-        con.commit()
-        flash({"ok": "New photo read. Quality looks fine.",
-               "warn": "New photo read. Please check the warnings below.",
-               "bad": "The new photo still could not be read reliably."}[r["quality"]],
-              "error" if r["quality"] == "bad" else "info")
-    except Exception as e:  # noqa: BLE001
-        con.execute("UPDATE scripts SET status='error', text=? WHERE id=?", (f"Reading failed: {e}", script_id))
-        con.commit()
-        flash(f"Reading failed: {e}", "error")
-    return redirect(url_for("script_page", script_id=s["id"]))
-
-
 @app.route("/test/<int:test_id>/mark_all", methods=["POST"])
 def mark_all(test_id):
     con = db.connect()
     t = _get_test(con, test_id)
     st = db.load_settings()
     n, errors = 0, []
-    skipped = [r["student"] for r in con.execute(
-        "SELECT student FROM scripts WHERE test_id=? AND status='read' AND quality='bad'", (test_id,))]
-    for r in con.execute("SELECT * FROM scripts WHERE test_id=? AND status='read' AND quality!='bad'",
-                         (test_id,)).fetchall():
+    for r in con.execute("SELECT * FROM scripts WHERE test_id=? AND status='read'", (test_id,)).fetchall():
         try:
-            res = _grade(t["scheme"], r["text"], st["engine"])
+            res = _grade(t["scheme"], r["text"], st["engine"], st)
             con.execute("UPDATE scripts SET result_json=?, status='marked' WHERE id=?", (json.dumps(res), r["id"]))
             con.commit()
             n += 1
@@ -346,8 +285,6 @@ def mark_all(test_id):
             errors.append(f"{r['student']}: {e}")
     flash(f"Marked {n} script(s)." + (" Problems: " + "; ".join(errors[:3]) if errors else ""),
           "error" if errors else "info")
-    if skipped:
-        flash(f"Not marked, photo needs re-upload: {', '.join(skipped)}.", "error")
     return redirect(url_for("test_page", test_id=test_id))
 
 
